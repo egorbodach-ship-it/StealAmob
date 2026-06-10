@@ -10,6 +10,12 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.jetbrains.annotations.NotNull;
 
 public class BrainrotPlaceholderMoney extends JavaPlugin {
+    @Override
+    public void onDisable() {
+        // __leakfix__
+        try { org.bukkit.Bukkit.getScheduler().cancelTasks(this); } catch (Throwable __t) {}
+        try { org.bukkit.event.HandlerList.unregisterAll(this); } catch (Throwable __t) {}
+    }
 
     @Override
     public void onEnable() {

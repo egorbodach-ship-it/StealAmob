@@ -56,6 +56,9 @@ public class BrainrotCodes extends JavaPlugin implements CommandExecutor {
 
     @Override
     public void onDisable() {
+        // __leakfix__
+        try { org.bukkit.Bukkit.getScheduler().cancelTasks(this); } catch (Throwable __t) {}
+        try { org.bukkit.event.HandlerList.unregisterAll(this); } catch (Throwable __t) {}
         saveData();
     }
 
@@ -253,7 +256,7 @@ public class BrainrotCodes extends JavaPlugin implements CommandExecutor {
 
         } catch (Exception e) {
             getLogger().severe("Ошибка при интеграции с BrainrotBases: " + e.getMessage());
-            e.printStackTrace();
+            org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage());
             player.sendMessage("§c✖ Произошла внутренняя ошибка при выдаче награды.");
             return false;
         }
@@ -266,7 +269,7 @@ public class BrainrotCodes extends JavaPlugin implements CommandExecutor {
             try {
                 dataFile.createNewFile();
             } catch (IOException e) {
-                e.printStackTrace();
+                org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage());
             }
         }
         dataConfig = YamlConfiguration.loadConfiguration(dataFile);
@@ -276,7 +279,7 @@ public class BrainrotCodes extends JavaPlugin implements CommandExecutor {
         try {
             saveConfigAsync(dataConfig, dataFile);
         } catch (IOException e) {
-            e.printStackTrace();
+            org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage());
         }
     }
 }

@@ -27,6 +27,12 @@ import java.util.*;
 import java.util.Date;
 
 public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecutor {
+    @Override
+    public void onDisable() {
+        // __leakfix__
+        try { org.bukkit.Bukkit.getScheduler().cancelTasks(this); } catch (Throwable __t) {}
+        try { org.bukkit.event.HandlerList.unregisterAll(this); } catch (Throwable __t) {}
+    }
     private final Object ioLock = new Object();
     public void saveConfigAsync(final org.bukkit.configuration.file.FileConfiguration cfg, final java.io.File file) throws java.io.IOException {
         if (cfg == null || file == null) return;
@@ -207,7 +213,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
         if (sec != null) {
             int slot = 36;
             List<String> keys = new ArrayList<>(sec.getKeys(false));
-            try { keys.sort(Comparator.comparingInt(Integer::parseInt)); } catch (Exception e) {}
+            try { keys.sort(Comparator.comparingInt(Integer::parseInt)); } catch (Exception e) { org.bukkit.Bukkit.getLogger().warning("Brainrot[brainrot-admin]: " + e.getMessage()); }
 
             for (String key : keys) {
                 if (slot >= 54) break;
@@ -222,7 +228,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
                     if (type.equals("SPONGE")) mat = Material.SPONGE;
                     else if (type.equals("IRON_GOLEM")) mat = Material.IRON_BLOCK;
                     else mat = Material.valueOf(type + "_SPAWN_EGG");
-                } catch (Exception e) {}
+                } catch (Exception e) { org.bukkit.Bukkit.getLogger().warning("Brainrot[brainrot-admin]: " + e.getMessage()); }
 
                 ItemStack item = new ItemStack(mat);
                 ItemMeta m = item.getItemMeta();
@@ -364,7 +370,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
                 else if (t.equals("SNOW_GOLEM")) mat = Material.CARVED_PUMPKIN;
                 else if (t.equals("MOOSHROOM")) mat = Material.RED_MUSHROOM_BLOCK;
                 else mat = Material.valueOf(t + "_SPAWN_EGG");
-            } catch (Exception e) {}
+            } catch (Exception e) { org.bukkit.Bukkit.getLogger().warning("Brainrot[brainrot-admin]: " + e.getMessage()); }
             inv.addItem(createItem(mat, "§e" + t));
         }
 
@@ -424,7 +430,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
 
         } catch (Exception e) {
             admin.sendMessage("§cОшибка API: " + e.getMessage());
-            e.printStackTrace();
+            org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage());
         }
     }
 
@@ -518,7 +524,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
             
         } catch (Exception e) {
             getLogger().warning("Ошибка ReloadFromDisk: " + e.getMessage());
-            e.printStackTrace();
+            org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage());
         }
     }
 
@@ -531,7 +537,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
                 Method saveMethod = bb.getClass().getDeclaredMethod("savePlayerMobsInstantly", String.class);
                 saveMethod.setAccessible(true);
                 saveMethod.invoke(bb, targetName);
-            } catch (Exception e) {}
+            } catch (Exception e) { org.bukkit.Bukkit.getLogger().warning("Brainrot[brainrot-admin]: " + e.getMessage()); }
         }
     }
 
@@ -544,7 +550,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
             for (Map.Entry<String, String> e : bases.entrySet()) {
                 if (e.getValue().equals(playerName)) return e.getKey();
             }
-        } catch (Exception e) {}
+        } catch (Exception e) { org.bukkit.Bukkit.getLogger().warning("Brainrot[brainrot-admin]: " + e.getMessage()); }
         return null;
     }
 
@@ -566,7 +572,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
         try {
             Method m = bb.getClass().getMethod("findFreeMobPoint", String.class);
             return (String) m.invoke(bb, base);
-        } catch (Exception e) {}
+        } catch (Exception e) { org.bukkit.Bukkit.getLogger().warning("Brainrot[brainrot-admin]: " + e.getMessage()); }
         return null;
     }
 
@@ -588,7 +594,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
                 while ((l = r.readLine()) != null) lines.add(l);
                 int start = Math.max(0, lines.size() - 20);
                 for (int i = start; i < lines.size(); i++) admin.sendMessage("§7" + lines.get(i));
-            } catch (Exception e) {}
+            } catch (Exception e) { org.bukkit.Bukkit.getLogger().warning("Brainrot[brainrot-admin]: " + e.getMessage()); }
         } else admin.sendMessage("§cЛогов нет.");
     }
 
@@ -647,7 +653,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
                 h.add("§7Всего банов: §c" + totalBans);
                 h.add("§7Всего мутов: §6" + totalMutes);
             }
-        } catch (Exception e) { h.add("§cОшибка LiteBans"); e.printStackTrace(); }
+        } catch (Exception e) { h.add("§cОшибка LiteBans"); org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage()); }
         return h;
     }
 

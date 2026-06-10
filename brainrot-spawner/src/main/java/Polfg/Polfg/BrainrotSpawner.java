@@ -361,7 +361,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             getLogger().info("§a✓ Голограмма создана для спавнера: " + config.getId());
         } catch (Exception e) {
             getLogger().severe("Ошибка создания голограммы: " + e.getMessage());
-            e.printStackTrace();
+            org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage());
         }
     }
 
@@ -1006,7 +1006,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             startMobMovement(mob, nameTagHeight, config);
         } catch (Exception e) {
             getLogger().severe("Ошибка спавна: " + e.getMessage());
-            e.printStackTrace();
+            org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage());
         }
     }
 
@@ -1851,7 +1851,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         } catch (Exception e) {
             getLogger().severe("Delivery error: " + e.getMessage());
             buyer.sendMessage("§c✖ Ошибка доставки!");
-            e.printStackTrace();
+            org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage());
         } finally {
             cleanupMob(mob);
         }
@@ -2061,6 +2061,9 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
 
     @Override
     public void onDisable() {
+        // __leakfix__
+        try { org.bukkit.Bukkit.getScheduler().cancelTasks(this); } catch (Throwable __t) {}
+        try { org.bukkit.event.HandlerList.unregisterAll(this); } catch (Throwable __t) {}
         if (hologramUpdateTask != null) try { hologramUpdateTask.cancel(); } catch (Exception ignored) {}
         for (String spawnerId : new ArrayList<>(spawnerHolograms.keySet())) removeSpawnerHologram(spawnerId);
         spawnerHolograms.clear();

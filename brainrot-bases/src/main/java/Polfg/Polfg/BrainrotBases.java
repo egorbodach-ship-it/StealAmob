@@ -1324,8 +1324,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         }
         try {
             chunk.setForceLoaded(true);
-        } catch (Exception e) {
-        }
+        } catch (Exception e) { org.bukkit.Bukkit.getLogger().warning("Brainrot[brainrot-bases]: " + e.getMessage()); }
     }
     private void handleMobDespawn(Entity mob, String mobPoint) {
         if (mobPoint == null) return;
@@ -1403,6 +1402,9 @@ public class BrainrotBases extends JavaPlugin implements Listener {
     }
     @Override
     public void onDisable() {
+        // __leakfix__
+        try { org.bukkit.Bukkit.getScheduler().cancelTasks(this); } catch (Throwable __t) {}
+        try { org.bukkit.event.HandlerList.unregisterAll(this); } catch (Throwable __t) {}
         moneyTimerRunning = false;
         getLogger().info("=== ВЫКЛЮЧЕНИЕ ПЛАГИНА ===");
         getLogger().info("Мобы уже сохранены в реальном времени, пропускаем сохранение");
@@ -8619,7 +8621,7 @@ public List<String> getMobPoints(String baseName) {
                 }
             } catch (Exception e) {
                 getLogger().severe("✗ Ошибка загрузки мира " + worldName + ": " + e.getMessage());
-                e.printStackTrace();
+                org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage());
             }
         }
         debugLog("=====================================");

@@ -45,6 +45,9 @@ public class SpawnWorld extends JavaPlugin implements Listener, CommandExecutor 
 
     @Override
     public void onDisable() {
+        // __leakfix__
+        try { org.bukkit.Bukkit.getScheduler().cancelTasks(this); } catch (Throwable __t) {}
+        try { org.bukkit.event.HandlerList.unregisterAll(this); } catch (Throwable __t) {}
         // Сохраняем мир перед выключением
         World targetWorld = Bukkit.getWorld(targetWorldName);
         if (targetWorld != null) {
@@ -217,7 +220,7 @@ public class SpawnWorld extends JavaPlugin implements Listener, CommandExecutor 
                         @Override
                         public void run() {
                             sender.sendMessage(ChatColor.RED + "Ошибка при копировании: " + e.getMessage());
-                            e.printStackTrace();
+                            org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage());
                         }
                     }.runTask(SpawnWorld.this);
                 }
@@ -237,7 +240,7 @@ public class SpawnWorld extends JavaPlugin implements Listener, CommandExecutor 
             return creator.createWorld();
         } catch (Exception e) {
             getLogger().severe("Ошибка загрузки мира: " + e.getMessage());
-            e.printStackTrace();
+            org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage());
             return null;
         }
     }
