@@ -8,14 +8,7 @@
         <artifactId>brainrot-parent</artifactId>
         <version>1.0.0</version>
     </parent>
-    <artifactId>brainrot-spawner</artifactId>
+    <artifactId>brainrot-stubs</artifactId>
     <packaging>jar</packaging>
-    <dependencies>
-        <dependency>
-            <groupId>Polfg.Polfg</groupId>
-            <artifactId>brainrot-stubs</artifactId>
-            <version>1.0.0</version>
-            <scope>provided</scope>
-        </dependency>
-    </dependencies>
+    <description>Compile-time API stubs for FancyHolograms and ActionBarAPI (not shipped at runtime).</description>
 </project>
