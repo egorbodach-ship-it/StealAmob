@@ -1,0 +1,11 @@
+# SpawnWorld configuration
+source-world: world
+target-world: spawn_world
+
+world-settings:
+  disable-monsters: false
+  always-day: false
+  no-weather: false
+
+teleport-on-join: false
+respawn-in-spawn-world: false

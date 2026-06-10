@@ -20,6 +20,7 @@
         <placeholderapi.version>2.11.6</placeholderapi.version>
         <worldedit.version>7.3.6</worldedit.version>
         <worldguard.version>7.0.12</worldguard.version>
+        <fancyholograms.version>2.9.0</fancyholograms.version>
     </properties>
 
     <modules>
@@ -51,6 +52,10 @@
         <repository>
             <id>enginehub</id>
             <url>https://maven.enginehub.org/repo/</url>
+        </repository>
+        <repository>
+            <id>fancyinnovations-releases</id>
+            <url>https://repo.fancyinnovations.com/releases</url>
         </repository>
     </repositories>
 

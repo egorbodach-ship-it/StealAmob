@@ -12,10 +12,16 @@
     <packaging>jar</packaging>
     <dependencies>
         <dependency>
-            <groupId>Polfg.Polfg</groupId>
-            <artifactId>brainrot-stubs</artifactId>
-            <version>1.0.0</version>
+            <groupId>de.oliver</groupId>
+            <artifactId>FancyHolograms</artifactId>
+            <version>${fancyholograms.version}</version>
             <scope>provided</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>me.clip</groupId>
