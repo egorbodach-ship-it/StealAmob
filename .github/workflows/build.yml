@@ -26,7 +26,7 @@ jobs:
       - name: Collect jars
         run: |
           mkdir -p dist
-          find . -path '*/target/*.jar' ! -name 'original-*.jar' -exec cp {} dist/ \;
+          find . -path '*/target/*.jar' ! -name 'original-*.jar' ! -name 'brainrot-stubs-*.jar' -exec cp {} dist/ \;
           ls -la dist
 
       - name: Upload plugin jars
