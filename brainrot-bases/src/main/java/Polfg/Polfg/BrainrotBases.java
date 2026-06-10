@@ -502,9 +502,17 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             this.snowy = snowy;
         }
     }
+    private boolean debug = false;
+
+    /** Пишет отладочный лог только при settings.debug=true. */
+    private void debugLog(String msg) {
+        if (debug) getLogger().info(msg);
+    }
+
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        debug = getConfig().getBoolean("settings.debug", false);
         initRebirthsFile();
         migrateRebirthsFromConfig();
         mobsFile = new File(getDataFolder(), "mobs.yml");
@@ -534,6 +542,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         lockHologramHeight = getConfig().getDouble("settings.lock_hologram_height", 1.2);
         getConfig().addDefault("settings.mob_hologram_base_height", 2.0);
         getConfig().addDefault("settings.collector_hologram_height", 0.3);
+        getConfig().addDefault("settings.debug", false);
         getConfig().options().copyDefaults(true);
         saveConfig();
         setupEconomy();
@@ -991,7 +1000,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
     }
     private void cleanupAllDuplicateHolograms() {
         if (hologramManager == null) return;
-        getLogger().info("[CLEANUP] ========== ОЧИСТКА ДУБЛИКАТОВ ==========");
+        debugLog("[CLEANUP] ========== ОЧИСТКА ДУБЛИКАТОВ ==========");
         Map<String, List<Hologram>> hologramsByName = new HashMap<>();
         for (Hologram holo : hologramManager.getHolograms()) {
             String name = holo.getData().getName();
@@ -1001,7 +1010,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         for (Map.Entry<String, List<Hologram>> entry : hologramsByName.entrySet()) {
             List<Hologram> holos = entry.getValue();
             if (holos.size() > 1) {
-                getLogger().warning("[CLEANUP] Найдено " + holos.size() + " дубликатов: " + entry.getKey());
+                debugLog("[CLEANUP] Найдено " + holos.size() + " дубликатов: " + entry.getKey());
                 for (int i = 1; i < holos.size(); i++) {
                     hologramManager.removeHologram(holos.get(i));
                     totalRemoved++;
@@ -1021,7 +1030,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                 if (!validMobUUIDs.contains(uuid)) {
                     hologramManager.removeHologram(holo);
                     totalRemoved++;
-                    getLogger().info("[CLEANUP] Удалена осиротевшая голограмма моба: " + name);
+                    debugLog("[CLEANUP] Удалена осиротевшая голограмма моба: " + name);
                 }
             }
         }
@@ -1034,12 +1043,12 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                     hologramManager.removeHologram(holo);
                     collectorHolograms.remove(collectorId);
                     totalRemoved++;
-                    getLogger().info("[CLEANUP] Удалена осиротевшая голограмма коллектора: " + name);
+                    debugLog("[CLEANUP] Удалена осиротевшая голограмма коллектора: " + name);
                 }
             }
         }
-        getLogger().info("[CLEANUP] Всего удалено дубликатов: " + totalRemoved);
-        getLogger().info("[CLEANUP] ==========================================");
+        debugLog("[CLEANUP] Всего удалено дубликатов: " + totalRemoved);
+        debugLog("[CLEANUP] ==========================================");
     }
     private void registerResetRebirthCommand() {
         PluginCommand command = getCommand("resetrebirth");
@@ -1466,7 +1475,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             savedCount++;
             getLogger().info("  ✓ " + type.name + " на точке " + mobPoint);
         }
-        getLogger().info("Сохранено " + savedCount + " мобов для игрока " + playerName);
+        debugLog("Сохранено " + savedCount + " мобов для игрока " + playerName);
     }
     public Map<String, String> getBases() {
         return new HashMap<>(bases);
@@ -2408,16 +2417,16 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         }
         List<String> mobPoints = baseMobSpawnPoints.get(thiefBase);
         Set<String> occupied = occupiedMobPoints.get(thiefBase);
-        getLogger().warning("[STEAL-DEBUG] База вора: " + thiefBase);
-        getLogger().warning("[STEAL-DEBUG] Всего точек: " + (mobPoints != null ? mobPoints.size() : 0));
-        getLogger().warning("[STEAL-DEBUG] Занято: " + (occupied != null ? occupied.size() : 0));
+        debugLog("[STEAL-DEBUG] База вора: " + thiefBase);
+        debugLog("[STEAL-DEBUG] Всего точек: " + (mobPoints != null ? mobPoints.size() : 0));
+        debugLog("[STEAL-DEBUG] Занято: " + (occupied != null ? occupied.size() : 0));
         if (!hasFreeMobSlotsForBase(thiefBase)) {
             sendCooldownMessage(player, "§c❌ На вашей базе нет свободных мест! Освободите место перед кражей.", lastStealMessage);
             player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1f, 1f);
-            getLogger().warning("[STEAL-DEBUG] ЗАБЛОКИРОВАНО — нет свободных мест!");
+            debugLog("[STEAL-DEBUG] ЗАБЛОКИРОВАНО — нет свободных мест!");
             return;
         }
-        getLogger().warning("[STEAL-DEBUG] РАЗРЕШЕНО — есть свободное место");
+        debugLog("[STEAL-DEBUG] РАЗРЕШЕНО — есть свободное место");
         String freePoint = findFreeMobPoint(thiefBase);
         if (freePoint == null) {
             sendCooldownMessage(player, "§c❌ На вашей базе нет свободных мест! Освободите место перед кражей.", lastStealMessage);
@@ -3044,7 +3053,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
      if (!friendsFile.exists()) {
          try {
              friendsFile.createNewFile();
-             getLogger().info("Создан файл friends.yml");
+             debugLog("Создан файл friends.yml");
          } catch (IOException e) {
              getLogger().severe("Не удалось создать friends.yml: " + e.getMessage());
              return;
@@ -3451,7 +3460,7 @@ private boolean isBaseMob(Entity entity) {
             occupied = new HashSet<>();
             occupiedMobPoints.put(base, occupied);
         }
-        getLogger().info("findFreeMobPoint: база " + base + " | всего точек: " + mobPoints.size() + " | занято: " + occupied.size());
+        debugLog("findFreeMobPoint: база " + base + " | всего точек: " + mobPoints.size() + " | занято: " + occupied.size());
         for (String mobPoint : mobPoints) {
             if (!occupied.contains(mobPoint)) {
                 boolean actuallyOccupied = false;
@@ -3469,7 +3478,7 @@ private boolean isBaseMob(Entity entity) {
                     }
                 }
                 if (!actuallyOccupied) {
-                    getLogger().info("findFreeMobPoint: найдена свободная точка " + mobPoint);
+                    debugLog("findFreeMobPoint: найдена свободная точка " + mobPoint);
                     return mobPoint;
                 }
             }
@@ -3563,7 +3572,7 @@ private boolean isBaseMob(Entity entity) {
                 }
                 if (hasRealMob) {
                     availableCollectors.remove(collectorPoint);
-                    getLogger().info("Коллектор " + collectorPoint + " занят мобом на точке " + mobPointForThisCollector);
+                    debugLog("Коллектор " + collectorPoint + " занят мобом на точке " + mobPointForThisCollector);
                 } else {
                     getLogger().warning("Коллектор " + collectorPoint + " имеет недействительную связь. Очищаем.");
                     removeCollectorHologram(collectorId);
@@ -3573,7 +3582,7 @@ private boolean isBaseMob(Entity entity) {
         }
         if (!availableCollectors.isEmpty()) {
             String freeCollector = availableCollectors.get(0);
-            getLogger().info("Найден свободный коллектор для базы " + base + ": " + freeCollector);
+            debugLog("Найден свободный коллектор для базы " + base + ": " + freeCollector);
             return freeCollector;
         }
         getLogger().warning("Нет свободных коллекторов на базе " + base);
@@ -3796,19 +3805,19 @@ private boolean isBaseMob(Entity entity) {
             }
         }
         if (!pendingMutations.isEmpty()) {
-            getLogger().warning("[MUT-DEBUG] === PENDING MUTATIONS: " + pendingMutations.size() + " шт. ===");
+            debugLog("[MUT-DEBUG] === PENDING MUTATIONS: " + pendingMutations.size() + " шт. ===");
             for (String[] md : pendingMutations) {
-                getLogger().warning("[MUT-DEBUG]   point=" + md[0] + " mut=" + md[1] + " snowy=" + md[2]);
+                debugLog("[MUT-DEBUG]   point=" + md[0] + " mut=" + md[1] + " snowy=" + md[2]);
             }
             final String finalBase = playerBase;
             Bukkit.getScheduler().runTaskLater(this, () -> {
-                getLogger().warning("[MUT-DEBUG] === TIMER FIRED! Применяем мутации... ===");
-                getLogger().warning("[MUT-DEBUG] entityToPointMap size: " + entityToPointMap.size());
+                debugLog("[MUT-DEBUG] === TIMER FIRED! Применяем мутации... ===");
+                debugLog("[MUT-DEBUG] entityToPointMap size: " + entityToPointMap.size());
                 for (String[] mutData : pendingMutations) {
                     String mobPoint = mutData[0];
                     String mutName = mutData[1];
                     boolean snowy = Boolean.parseBoolean(mutData[2]);
-                    getLogger().warning("[MUT-DEBUG] Обрабатываем: point=" + mobPoint + " mut=" + mutName + " snowy=" + snowy);
+                    debugLog("[MUT-DEBUG] Обрабатываем: point=" + mobPoint + " mut=" + mutName + " snowy=" + snowy);
                     Entity targetMob = null;
                     for (Map.Entry<Entity, String> entry : entityToPointMap.entrySet()) {
                         if (mobPoint.equals(entry.getValue())) {
@@ -3820,32 +3829,32 @@ private boolean isBaseMob(Entity entity) {
                         }
                     }
                     if (targetMob == null) {
-                        getLogger().warning("[MUT-DEBUG] ❌ Не найден моб на точке " + mobPoint);
+                        debugLog("[MUT-DEBUG] ❌ Не найден моб на точке " + mobPoint);
                         continue;
                     }
-                    getLogger().warning("[MUT-DEBUG] Найден моб: " + targetMob.getType() + " UUID=" + targetMob.getUniqueId());
+                    debugLog("[MUT-DEBUG] Найден моб: " + targetMob.getType() + " UUID=" + targetMob.getUniqueId());
                     Mutation existingMut = baseMobMutations.getOrDefault(targetMob, Mutation.NONE);
                     boolean existingSnowy = baseMobSnowy.getOrDefault(targetMob, false);
-                    getLogger().warning("[MUT-DEBUG] Текущая мутация: " + existingMut + " snowy=" + existingSnowy);
+                    debugLog("[MUT-DEBUG] Текущая мутация: " + existingMut + " snowy=" + existingSnowy);
                     Mutation newMut = Mutation.fromName(mutName);
                     if (existingMut == Mutation.NONE && !existingSnowy) {
                         applyMutationDirect(targetMob, mutName, snowy);
-                        getLogger().warning("[MUT-DEBUG] ✅ Мутация " + mutName +
+                        debugLog("[MUT-DEBUG] ✅ Мутация " + mutName +
                             (snowy ? "+SNOWY" : "") + " применена к мобу на " + mobPoint);
                     } else if (existingMut != newMut || existingSnowy != snowy) {
                         applyMutationDirect(targetMob, mutName, snowy);
-                        getLogger().warning("[MUT-DEBUG] ✅ Мутация обновлена: " + mutName +
+                        debugLog("[MUT-DEBUG] ✅ Мутация обновлена: " + mutName +
                             (snowy ? "+SNOWY" : "") + " на " + mobPoint);
                     } else {
-                        getLogger().warning("[MUT-DEBUG] Мутация уже применена на " + mobPoint);
+                        debugLog("[MUT-DEBUG] Мутация уже применена на " + mobPoint);
                     }
                 }
-                getLogger().warning("[MUT-DEBUG] === ЗАВЕРШЕНО ===");
+                debugLog("[MUT-DEBUG] === ЗАВЕРШЕНО ===");
             }, 10L);
         }
     }
     private void cleanupOrphanedLuckyBlocks() {
-        getLogger().info("[LB CLEANUP] ========== ЗАПУСК ОЧИСТКИ ==========");
+        debugLog("[LB CLEANUP] ========== ЗАПУСК ОЧИСТКИ ==========");
         int rootsRemoved = 0;
         int hitboxesRemoved = 0;
         int ajPartsRemoved = 0;
@@ -3871,9 +3880,9 @@ private boolean isBaseMob(Entity entity) {
             if (tag != null) registeredTags.add(tag);
         }
         Set<String> currentAnimating = new HashSet<>(animatingPoints);
-        getLogger().info("[LB CLEANUP] Зарегистрировано LB: " + registeredLBs.size());
-        getLogger().info("[LB CLEANUP] Зарегистрировано хитбоксов: " + registeredHitboxes.size());
-        getLogger().info("[LB CLEANUP] Точки в анимации: " + currentAnimating.size());
+        debugLog("[LB CLEANUP] Зарегистрировано LB: " + registeredLBs.size());
+        debugLog("[LB CLEANUP] Зарегистрировано хитбоксов: " + registeredHitboxes.size());
+        debugLog("[LB CLEANUP] Точки в анимации: " + currentAnimating.size());
         for (World world : Bukkit.getWorlds()) {
             String dim = world.getKey().toString();
             for (Entity entity : new ArrayList<>(world.getEntities())) {
@@ -3899,7 +3908,7 @@ private boolean isBaseMob(Entity entity) {
                         }
                     }
                     if (uniqTag != null && registeredTags.contains(uniqTag)) continue;
-                    getLogger().warning("[LB CLEANUP] Найдена осиротевшая модель: " +
+                    debugLog("[LB CLEANUP] Найдена осиротевшая модель: " +
                         entity.getUniqueId() + " тег=" + uniqTag +
                         " loc=" + entity.getLocation().getBlockX() + "," +
                         entity.getLocation().getBlockY() + "," +
@@ -3931,7 +3940,7 @@ private boolean isBaseMob(Entity entity) {
                         }
                     }
                     if (belongsToLive) continue;
-                    getLogger().warning("[LB CLEANUP] Найден осиротевший хитбокс: " +
+                    debugLog("[LB CLEANUP] Найден осиротевший хитбокс: " +
                         entity.getUniqueId() +
                         " loc=" + entity.getLocation().getBlockX() + "," +
                         entity.getLocation().getBlockY() + "," +
@@ -3950,21 +3959,21 @@ private boolean isBaseMob(Entity entity) {
                         }
                     }
                     if (belongsToLive) continue;
-                    getLogger().warning("[LB CLEANUP] Найдена осиротевшая часть AJ: " +
+                    debugLog("[LB CLEANUP] Найдена осиротевшая часть AJ: " +
                         entity.getUniqueId() + " тип=" + entity.getType());
                     entity.remove();
                     ajPartsRemoved++;
                 }
                 if (entity.getScoreboardTags().contains("LUCKY_BLOCK_CARRY_DISPLAY")) {
                     if (entity.getVehicle() == null || !(entity.getVehicle() instanceof Player)) {
-                        getLogger().warning("[LB CLEANUP] Найден осиротевший carry display: " +
+                        debugLog("[LB CLEANUP] Найден осиротевший carry display: " +
                             entity.getUniqueId());
                         entity.remove();
                         carryDisplaysRemoved++;
                     } else {
                         Player carrier = (Player) entity.getVehicle();
                         if (!carrier.getScoreboardTags().contains("CARRYING_LUCKY_BLOCK")) {
-                            getLogger().warning("[LB CLEANUP] Carry display на игроке " +
+                            debugLog("[LB CLEANUP] Carry display на игроке " +
                                 carrier.getName() + " без тега CARRYING — удаляем");
                             carrier.removePassenger(entity);
                             entity.remove();
@@ -4006,7 +4015,7 @@ private boolean isBaseMob(Entity entity) {
                 String uniq = luckyBlockTags.get(root);
                 if (uniq != null) newHitbox.addScoreboardTag(uniq);
                 luckyBlockHitboxMap.put(root, newHitbox);
-                getLogger().info("[LB CLEANUP] Пересоздан хитбокс для LB: " + root.getUniqueId());
+                debugLog("[LB CLEANUP] Пересоздан хитбокс для LB: " + root.getUniqueId());
             }
         }
         for (Entity mob : new ArrayList<>(luckyBlockOpenTime.keySet())) {
@@ -4031,13 +4040,13 @@ private boolean isBaseMob(Entity entity) {
                 cachesCleaned++;
             }
         }
-        getLogger().info("[LB CLEANUP] ========== ИТОГО ==========");
-        getLogger().info("[LB CLEANUP] Моделей удалено: " + rootsRemoved);
-        getLogger().info("[LB CLEANUP] Хитбоксов удалено: " + hitboxesRemoved);
-        getLogger().info("[LB CLEANUP] Частей AJ удалено: " + ajPartsRemoved);
-        getLogger().info("[LB CLEANUP] Carry display удалено: " + carryDisplaysRemoved);
-        getLogger().info("[LB CLEANUP] Кэшей очищено: " + cachesCleaned);
-        getLogger().info("[LB CLEANUP] ============================");
+        debugLog("[LB CLEANUP] ========== ИТОГО ==========");
+        debugLog("[LB CLEANUP] Моделей удалено: " + rootsRemoved);
+        debugLog("[LB CLEANUP] Хитбоксов удалено: " + hitboxesRemoved);
+        debugLog("[LB CLEANUP] Частей AJ удалено: " + ajPartsRemoved);
+        debugLog("[LB CLEANUP] Carry display удалено: " + carryDisplaysRemoved);
+        debugLog("[LB CLEANUP] Кэшей очищено: " + cachesCleaned);
+        debugLog("[LB CLEANUP] ============================");
     }
     private void moveSavedMobsToNewBase(String playerName, String newBase) {
         List<SavedMobData> savedMobs = savedPlayerMobs.remove(playerName);
@@ -4249,7 +4258,7 @@ private boolean isBaseMob(Entity entity) {
                     mobsConfig.set(path + ".luckyBlockReady", mob.luckyBlockReady);
                 }
             }
-            getLogger().info("Сохранено " + mobs.size() + " мобов для игрока " + playerName);
+            debugLog("Сохранено " + mobs.size() + " мобов для игрока " + playerName);
         }
         try {
             mobsConfig.save(mobsFile);
@@ -4723,12 +4732,12 @@ private boolean isBaseMob(Entity entity) {
     }
     private void createCollectorHologramForMob(String base, String mobPoint, String collectorPoint) {
         if (hologramManager == null || base == null || mobPoint == null || collectorPoint == null) {
-            getLogger().warning("[COLLECTOR] Некорректные параметры");
+            debugLog("[COLLECTOR] Некорректные параметры");
             return;
         }
         String collectorId = base + "_" + collectorPoint;
         String hologramName = "collector_" + collectorId;
-        getLogger().info("[COLLECTOR] Создание коллектора: " + collectorId + " для моба на " + mobPoint);
+        debugLog("[COLLECTOR] Создание коллектора: " + collectorId + " для моба на " + mobPoint);
         int removed = 0;
         for (Hologram holo : new ArrayList<>(hologramManager.getHolograms())) {
             if (holo.getData().getName().equals(hologramName)) {
@@ -4737,16 +4746,16 @@ private boolean isBaseMob(Entity entity) {
             }
         }
         if (removed > 0) {
-            getLogger().info("[COLLECTOR] Удалено " + removed + " дубликатов голограммы: " + hologramName);
+            debugLog("[COLLECTOR] Удалено " + removed + " дубликатов голограммы: " + hologramName);
         }
         Hologram existingHolo = collectorHolograms.remove(collectorId);
         if (existingHolo != null) {
             hologramManager.removeHologram(existingHolo);
-            getLogger().info("[COLLECTOR] Удалена голограмма из кэша: " + collectorId);
+            debugLog("[COLLECTOR] Удалена голограмма из кэша: " + collectorId);
         }
         String oldCollectorId = entityToCollectorMap.get(mobPoint);
         if (oldCollectorId != null && !oldCollectorId.equals(collectorId)) {
-            getLogger().info("[COLLECTOR] Очистка старой связи: " + oldCollectorId + " -> " + mobPoint);
+            debugLog("[COLLECTOR] Очистка старой связи: " + oldCollectorId + " -> " + mobPoint);
             Hologram oldHolo = collectorHolograms.remove(oldCollectorId);
             if (oldHolo != null) {
                 hologramManager.removeHologram(oldHolo);
@@ -4770,10 +4779,10 @@ private boolean isBaseMob(Entity entity) {
                 }
             }
             if (otherMobAlive) {
-                getLogger().warning("[COLLECTOR] Коллектор " + collectorId + " занят живым мобом на " + existingMobPoint);
+                debugLog("[COLLECTOR] Коллектор " + collectorId + " занят живым мобом на " + existingMobPoint);
                 return;
             } else {
-                getLogger().info("[COLLECTOR] Коллектор " + collectorId + " был связан с мёртвым мобом, очищаем");
+                debugLog("[COLLECTOR] Коллектор " + collectorId + " был связан с мёртвым мобом, очищаем");
                 collectorToEntityMap.remove(collectorId);
                 entityToCollectorMap.remove(existingMobPoint);
             }
@@ -4781,12 +4790,12 @@ private boolean isBaseMob(Entity entity) {
         FileConfiguration cfg = getConfig();
         World world = Bukkit.getWorld(cfg.getString("bases." + base + ".world"));
         if (world == null) {
-            getLogger().warning("[COLLECTOR] Мир не найден для базы " + base);
+            debugLog("[COLLECTOR] Мир не найден для базы " + base);
             return;
         }
         String[] s = collectorPoint.split("_");
         if (s.length != 4) {
-            getLogger().warning("[COLLECTOR] Неверный формат точки: " + collectorPoint);
+            debugLog("[COLLECTOR] Неверный формат точки: " + collectorPoint);
             return;
         }
         int x, y, z;
@@ -4795,7 +4804,7 @@ private boolean isBaseMob(Entity entity) {
             y = Integer.parseInt(s[2]);
             z = Integer.parseInt(s[3]);
         } catch (NumberFormatException e) {
-            getLogger().warning("[COLLECTOR] Неверные координаты: " + collectorPoint);
+            debugLog("[COLLECTOR] Неверные координаты: " + collectorPoint);
             return;
         }
         double collectorHologramHeight = getConfig().getDouble("settings.collector_hologram_height", 0.3);
@@ -4816,7 +4825,7 @@ private boolean isBaseMob(Entity entity) {
             collectorMoney.put(collectorId, 0.0);
             collectorLastUpdate.put(collectorId, System.currentTimeMillis());
         }
-        getLogger().info("[COLLECTOR] ✅ Создан коллектор " + collectorId + " для " + mobPoint);
+        debugLog("[COLLECTOR] ✅ Создан коллектор " + collectorId + " для " + mobPoint);
     }
     private void removeCollectorHologram(String collectorId) {
         Hologram holo = collectorHolograms.remove(collectorId);
@@ -5174,7 +5183,7 @@ private boolean isBaseMob(Entity entity) {
                         savePlayerMobsInstantly(owner);
                     }, 5L);
                 }
-                getLogger().info("Создан Lucky Block на точке " + finalMobPoint);
+                debugLog("Создан Lucky Block на точке " + finalMobPoint);
             }, true);
             return;
         }
@@ -5192,7 +5201,7 @@ private boolean isBaseMob(Entity entity) {
                 String owner = bases.get(finalBase);
                 if (owner != null && !owner.equals("none"))
                     Bukkit.getScheduler().runTaskLater(this, () -> savePlayerMobsInstantly(owner), 5L);
-                getLogger().info("Создан Гнилоход на точке " + finalMobPoint);
+                debugLog("Создан Гнилоход на точке " + finalMobPoint);
             }, true);
             return;
         }
@@ -5357,7 +5366,7 @@ private boolean isBaseMob(Entity entity) {
         if (collectorPoint != null) {
             createCollectorHologramForMob(base, mobPoint, collectorPoint);
         }
-        getLogger().info("Создан " + type.name + " (редкость: " + type.rarity + ") на точке " + mobPoint + " с доходом " + type.baseIncome + "/сек");
+        debugLog("Создан " + type.name + " (редкость: " + type.rarity + ") на точке " + mobPoint + " с доходом " + type.baseIncome + "/сек");
         final Entity finalMob = mob;
         String owner = bases.get(base);
         if (owner != null && !owner.equals("none")) {
@@ -5581,28 +5590,28 @@ private boolean isBaseMob(Entity entity) {
         if (mob == null || base == null) return;
         String owner = bases.get(base);
         if (owner == null || owner.equals("none")) {
-            getLogger().warning("[MUT-DEBUG] applyMutationToBaseMob: owner=null или none для базы " + base);
+            debugLog("[MUT-DEBUG] applyMutationToBaseMob: owner=null или none для базы " + base);
             return;
         }
         String mobPoint = entityToPointMap.get(mob);
         if (mobPoint == null) {
-            getLogger().warning("[MUT-DEBUG] applyMutationToBaseMob: mobPoint=NULL! Моб ещё не в entityToPointMap!");
+            debugLog("[MUT-DEBUG] applyMutationToBaseMob: mobPoint=NULL! Моб ещё не в entityToPointMap!");
             return;
         }
         List<SavedMobData> savedMobs = savedPlayerMobs.get(owner);
         if (savedMobs == null) {
-            getLogger().warning("[MUT-DEBUG] applyMutationToBaseMob: savedMobs=null для " + owner);
+            debugLog("[MUT-DEBUG] applyMutationToBaseMob: savedMobs=null для " + owner);
             return;
         }
-        getLogger().info("[MUT-DEBUG] applyMutationToBaseMob: ищем мутацию для " + mobPoint + " среди " + savedMobs.size() + " записей");
+        debugLog("[MUT-DEBUG] applyMutationToBaseMob: ищем мутацию для " + mobPoint + " среди " + savedMobs.size() + " записей");
         for (SavedMobData saved : savedMobs) {
-            getLogger().info("[MUT-DEBUG]   проверяем: base=" + saved.base + " point=" + saved.mobPoint + " mut=" + saved.mutation + " snowy=" + saved.snowy);
+            debugLog("[MUT-DEBUG]   проверяем: base=" + saved.base + " point=" + saved.mobPoint + " mut=" + saved.mutation + " snowy=" + saved.snowy);
             if (saved.base.equals(base) && saved.mobPoint.equals(mobPoint)) {
                 Mutation mutation = Mutation.fromName(saved.mutation);
                 boolean snowy = saved.snowy;
-                getLogger().info("[MUT-DEBUG]   НАЙДЕНО! mutation=" + mutation + " snowy=" + snowy);
+                debugLog("[MUT-DEBUG]   НАЙДЕНО! mutation=" + mutation + " snowy=" + snowy);
                 if (mutation == Mutation.NONE && !snowy) {
-                    getLogger().info("[MUT-DEBUG]   Нет мутации, пропускаем");
+                    debugLog("[MUT-DEBUG]   Нет мутации, пропускаем");
                     return;
                 }
                 if (mutation != Mutation.NONE) {
@@ -5618,38 +5627,38 @@ private boolean isBaseMob(Entity entity) {
                     removeMobHologram(mob);
                     createMobHologram(mob, type);
                 }
-                getLogger().info("[MUT-DEBUG]   ✅ Мутация применена!");
+                debugLog("[MUT-DEBUG]   ✅ Мутация применена!");
                 return;
             }
         }
-        getLogger().warning("[MUT-DEBUG] Мутация НЕ НАЙДЕНА для точки " + mobPoint);
+        debugLog("[MUT-DEBUG] Мутация НЕ НАЙДЕНА для точки " + mobPoint);
     }
     public void applyMutationDirect(Entity mob, String mutationName, boolean snowy) {
         if (mob == null) {
-            getLogger().warning("[MUT-DEBUG] applyMutationDirect: mob=null!");
+            debugLog("[MUT-DEBUG] applyMutationDirect: mob=null!");
             return;
         }
-        getLogger().info("[MUT-DEBUG] applyMutationDirect: mutationName=" + mutationName + " snowy=" + snowy + " mob=" + mob.getType() + " dead=" + mob.isDead());
+        debugLog("[MUT-DEBUG] applyMutationDirect: mutationName=" + mutationName + " snowy=" + snowy + " mob=" + mob.getType() + " dead=" + mob.isDead());
         Mutation mutation = Mutation.fromName(mutationName);
         if (mutation == Mutation.NONE && !snowy) {
-            getLogger().info("[MUT-DEBUG] applyMutationDirect: нет мутации, пропускаем");
+            debugLog("[MUT-DEBUG] applyMutationDirect: нет мутации, пропускаем");
             return;
         }
         if (mutation != Mutation.NONE) {
             baseMobMutations.put(mob, mutation);
             mob.addScoreboardTag("MUTATION_" + mutation.name());
-            getLogger().info("[MUT-DEBUG] applyMutationDirect: установлена мутация " + mutation);
+            debugLog("[MUT-DEBUG] applyMutationDirect: установлена мутация " + mutation);
         }
         if (snowy) {
             baseMobSnowy.put(mob, true);
             mob.addScoreboardTag("MUTATION_SNOWY");
-            getLogger().info("[MUT-DEBUG] applyMutationDirect: установлен snowy");
+            debugLog("[MUT-DEBUG] applyMutationDirect: установлен snowy");
         }
         MobType type = MobType.fromEntity(mob);
         if (type != null) {
             removeMobHologram(mob);
             createMobHologram(mob, type);
-            getLogger().info("[MUT-DEBUG] applyMutationDirect: голограмма пересоздана");
+            debugLog("[MUT-DEBUG] applyMutationDirect: голограмма пересоздана");
         }
     }
     private void removeMobAtPoint(String mobPoint) {
@@ -7793,7 +7802,7 @@ private boolean isBaseMob(Entity entity) {
             }
         }
         if (nearest != null) {
-            getLogger().info("Найдена точка сдачи для " + player.getName() +
+            debugLog("Найдена точка сдачи для " + player.getName() +
                             " на расстоянии " + String.format("%.1f", nearestDistance));
         }
         return nearest;
@@ -8186,10 +8195,10 @@ public List<String> getMobPoints(String baseName) {
             List<SavedMobData> savedMobs = savedPlayerMobs.get(playerName);
             boolean hasSavedMobs = savedMobs != null && !savedMobs.isEmpty();
             if (hasSavedMobs) {
-                getLogger().warning("[JOIN DEBUG] savedPlayerMobs содержит " + savedMobs.size() + " мобов");
+                debugLog("[JOIN DEBUG] savedPlayerMobs содержит " + savedMobs.size() + " мобов");
                 for (SavedMobData sm : savedMobs) {
                     if (sm.mobType.isLuckyBlock()) {
-                        getLogger().warning("[JOIN DEBUG] LB в памяти: timer=" + sm.luckyBlockRemainingMs + " ready=" + sm.luckyBlockReady);
+                        debugLog("[JOIN DEBUG] LB в памяти: timer=" + sm.luckyBlockRemainingMs + " ready=" + sm.luckyBlockReady);
                     }
                 }
             }
@@ -8201,11 +8210,11 @@ public List<String> getMobPoints(String baseName) {
                         if ("SPONGE".equals(mobType)) {
                             long timer = mobsConfig.getLong("mobs." + playerName + "." + key + ".luckyBlockTimer", -999);
                             boolean rdy = mobsConfig.getBoolean("mobs." + playerName + "." + key + ".luckyBlockReady", false);
-                            getLogger().warning("[JOIN DEBUG] mobs.yml LB: timer=" + timer + " ready=" + rdy);
+                            debugLog("[JOIN DEBUG] mobs.yml LB: timer=" + timer + " ready=" + rdy);
                         }
                     }
                 } else {
-                    getLogger().warning("[JOIN DEBUG] mobs.yml секция для " + playerName + " = null!");
+                    debugLog("[JOIN DEBUG] mobs.yml секция для " + playerName + " = null!");
                 }
             }
             String playerBase = null;
@@ -8216,12 +8225,12 @@ public List<String> getMobPoints(String baseName) {
                 }
             }
             if (playerBase != null) {
-                getLogger().warning("[JOIN DEBUG] База игрока: " + playerBase);
+                debugLog("[JOIN DEBUG] База игрока: " + playerBase);
                 removeAllMobsFromBase(playerBase);
                 Set<String> occupied = occupiedMobPoints.get(playerBase);
                 if (occupied != null) occupied.clear();
                 if (hasSavedMobs) {
-                    getLogger().warning("[JOIN DEBUG] Восстанавливаем " + savedMobs.size() + " мобов...");
+                    debugLog("[JOIN DEBUG] Восстанавливаем " + savedMobs.size() + " мобов...");
                     restorePlayerMobs(playerName);
                 }
                 sendCooldownMessage(p, "§a✅ Добро пожаловать на базу!", lastCollectMessage);
@@ -8231,7 +8240,7 @@ public List<String> getMobPoints(String baseName) {
                     sendCooldownMessage(p, "§c❌ Нет свободных баз!", lastCollectMessage);
                     return;
                 }
-                getLogger().warning("[JOIN DEBUG] Назначена НОВАЯ база: " + selectedBase);
+                debugLog("[JOIN DEBUG] Назначена НОВАЯ база: " + selectedBase);
                 removeAllMobsFromBase(selectedBase);
                 Set<String> occupied = occupiedMobPoints.get(selectedBase);
                 if (occupied != null) occupied.clear();
@@ -8454,7 +8463,7 @@ public List<String> getMobPoints(String baseName) {
         }
         try {
             mobsConfig.save(mobsFile);
-            getLogger().info("Сохранено " + savedCount + " мобов для игрока " + playerName);
+            debugLog("Сохранено " + savedCount + " мобов для игрока " + playerName);
         } catch (IOException e) {
             getLogger().severe("ОШИБКА записи mobs.yml: " + e.getMessage());
         }

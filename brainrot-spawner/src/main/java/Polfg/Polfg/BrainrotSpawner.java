@@ -1441,8 +1441,8 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             final double finalTotalWeight = totalWeight;
             mobsInRarity.sort((a, b) -> Double.compare(b.weight, a.weight));
             for (MobData mob : mobsInRarity) {
-                double mobChanceInPool = (mob.weight / finalTotalWeight) * 100;
-                double realChance = (rarity.chance / 100) * (mob.weight / finalTotalWeight) * 100;
+                double mobChanceInPool = finalTotalWeight > 0 ? (mob.weight / finalTotalWeight) * 100 : 0;
+                double realChance = finalTotalWeight > 0 ? (rarity.chance / 100) * (mob.weight / finalTotalWeight) * 100 : 0;
                 getLogger().info(String.format("  §7• §f%-22s §7вес:§e%5.1f §7пул:§a%5.1f%% §7реал:§b%.4f%%", mob.displayName, mob.weight, mobChanceInPool, realChance));
             }
         }
