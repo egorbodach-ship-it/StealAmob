@@ -1712,15 +1712,9 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                             baseIncome *= mutationMultiplier;
                             String base = findBaseByCollectorId(collectorId);
                             if (base == null) continue;
-                            String owner = bases.get(base);
-                            double multiplier = 1.0;
-                            if (owner != null && !owner.equals("none")) {
-                                Player ownerPlayer = Bukkit.getPlayer(owner);
-                                if (ownerPlayer != null) {
-                                    multiplier = getPlayerEarnMultiplier(ownerPlayer);
-                                }
-                            }
-                            double income = baseIncome * multiplier * secondsPassed;
+                            // __fix__ earn-multiplier is applied once at collection time (handleMoneyCollection).
+                            // Applying it here too caused double-multiplication (e.g. rebirth x5 became x25).
+                            double income = baseIncome * secondsPassed;
                             double currentMoney = collectorMoney.getOrDefault(collectorId, 0.0);
                             double newMoney = currentMoney + income;
                             newMoney = Math.round(newMoney * 10000.0) / 10000.0;
@@ -5734,7 +5728,7 @@ private boolean isBaseMob(Entity entity) {
                     });
                 }
                 if (!mob.isDead()) mob.remove();
-                getLogger().info("[LUCKY BLOCK] Удалён с точки " + mobPoint);
+                debugLog("[LUCKY BLOCK] Удалён с точки " + mobPoint);
             } else if (mob != null && rotWalkerTags.containsKey(mob)) {
                 String uniqTag = rotWalkerTags.remove(mob);
                 Entity hitbox = rotWalkerHitboxMap.remove(mob);
@@ -5775,7 +5769,7 @@ private boolean isBaseMob(Entity entity) {
                     });
                 }
                 if (!mob.isDead()) mob.remove();
-                getLogger().info("[ROT WALKER] Удалён с точки " + mobPoint);
+                debugLog("[ROT WALKER] Удалён с точки " + mobPoint);
             } else {
                 removeMobHologram(mob);
                 String collectorId = entityToCollectorMap.get(mobPoint);
@@ -6161,7 +6155,7 @@ private boolean isBaseMob(Entity entity) {
                     world.playSound(spawnLoc, Sound.UI_TOAST_CHALLENGE_COMPLETE, 0.7f, 1.2f);
                 }
                 animatingPoints.remove(finalMobPoint);
-                getLogger().info("[LUCKY BLOCK] ✅ база=" + finalBase +
+                debugLog("[LUCKY BLOCK] ✅ база=" + finalBase +
                                " точка=" + finalMobPoint + " тег=" + uniq +
                                " yaw=" + finalYaw);
                 if (callback != null) callback.accept(foundRoot);
@@ -6341,7 +6335,7 @@ private boolean isBaseMob(Entity entity) {
                     world.playSound(spawnLoc, Sound.ENTITY_ENDERMAN_TELEPORT, 0.7f, 0.5f);
                 }
                 animatingPoints.remove(finalMobPoint);
-                getLogger().info("[ROT WALKER] ✅ база=" + finalBase + " точка=" + finalMobPoint + " тег=" + uniq);
+                debugLog("[ROT WALKER] ✅ база=" + finalBase + " точка=" + finalMobPoint + " тег=" + uniq);
                 if (callback != null) callback.accept(foundRoot);
                 cancel();
             }
@@ -8299,7 +8293,7 @@ public List<String> getMobPoints(String baseName) {
     public void onQuit(PlayerQuitEvent e) {
         Player p = e.getPlayer();
         String playerName = p.getName();
-        getLogger().warning("========== [QUIT DEBUG] Выход " + playerName + " ==========");
+        debugLog("========== [QUIT DEBUG] Выход " + playerName + " ==========");
         if (p.getScoreboardTags().contains("CARRYING_LUCKY_BLOCK")) {
             removeLuckyBlockCarryDisplay(p);
         }
@@ -8320,36 +8314,36 @@ public List<String> getMobPoints(String baseName) {
                     if (!basePoints.contains(mobPoint)) continue;
                     MobType type = MobType.fromEntity(mob);
                     if (type != null && type.isLuckyBlock()) {
-                        getLogger().warning("[QUIT DEBUG] Lucky Block найден:");
-                        getLogger().warning("[QUIT DEBUG]   UUID: " + mob.getUniqueId());
-                        getLogger().warning("[QUIT DEBUG]   isDead: " + mob.isDead());
-                        getLogger().warning("[QUIT DEBUG]   isValid: " + mob.isValid());
-                        getLogger().warning("[QUIT DEBUG]   mobPoint: " + mobPoint);
-                        getLogger().warning("[QUIT DEBUG]   luckyBlockOpenTime contains: " + luckyBlockOpenTime.containsKey(mob));
-                        getLogger().warning("[QUIT DEBUG]   luckyBlockReady contains: " + luckyBlockReady.containsKey(mob));
+                        debugLog("[QUIT DEBUG] Lucky Block найден:");
+                        debugLog("[QUIT DEBUG]   UUID: " + mob.getUniqueId());
+                        debugLog("[QUIT DEBUG]   isDead: " + mob.isDead());
+                        debugLog("[QUIT DEBUG]   isValid: " + mob.isValid());
+                        debugLog("[QUIT DEBUG]   mobPoint: " + mobPoint);
+                        debugLog("[QUIT DEBUG]   luckyBlockOpenTime contains: " + luckyBlockOpenTime.containsKey(mob));
+                        debugLog("[QUIT DEBUG]   luckyBlockReady contains: " + luckyBlockReady.containsKey(mob));
                         Long openTime = luckyBlockOpenTime.get(mob);
                         Boolean ready = luckyBlockReady.get(mob);
-                        getLogger().warning("[QUIT DEBUG]   openTime: " + openTime);
-                        getLogger().warning("[QUIT DEBUG]   ready: " + ready);
+                        debugLog("[QUIT DEBUG]   openTime: " + openTime);
+                        debugLog("[QUIT DEBUG]   ready: " + ready);
                         if (openTime != null && openTime > 0) {
                             long remaining = openTime - System.currentTimeMillis();
-                            getLogger().warning("[QUIT DEBUG]   remaining: " + remaining + "мс (" + (remaining / 1000) + " сек)");
+                            debugLog("[QUIT DEBUG]   remaining: " + remaining + "мс (" + (remaining / 1000) + " сек)");
                         }
                     }
                 }
             }
-            getLogger().warning("[QUIT DEBUG] Вызываем savePlayerMobsInstantly...");
+            debugLog("[QUIT DEBUG] Вызываем savePlayerMobsInstantly...");
             savePlayerMobsInstantly(playerName);
-            getLogger().warning("[QUIT DEBUG] Проверяем savedPlayerMobs...");
+            debugLog("[QUIT DEBUG] Проверяем savedPlayerMobs...");
             List<SavedMobData> saved = savedPlayerMobs.get(playerName);
             if (saved != null) {
                 for (SavedMobData s : saved) {
                     if (s.mobType.isLuckyBlock()) {
-                        getLogger().warning("[QUIT DEBUG] Saved LB: timer=" + s.luckyBlockRemainingMs + " ready=" + s.luckyBlockReady);
+                        debugLog("[QUIT DEBUG] Saved LB: timer=" + s.luckyBlockRemainingMs + " ready=" + s.luckyBlockReady);
                     }
                 }
             }
-            getLogger().warning("[QUIT DEBUG] Проверяем mobs.yml...");
+            debugLog("[QUIT DEBUG] Проверяем mobs.yml...");
             if (mobsConfig != null) {
                 ConfigurationSection sec = mobsConfig.getConfigurationSection("mobs." + playerName);
                 if (sec != null) {
@@ -8358,7 +8352,7 @@ public List<String> getMobPoints(String baseName) {
                         if ("SPONGE".equals(mobType)) {
                             long timer = mobsConfig.getLong("mobs." + playerName + "." + key + ".luckyBlockTimer", -999);
                             boolean rdy = mobsConfig.getBoolean("mobs." + playerName + "." + key + ".luckyBlockReady", false);
-                            getLogger().warning("[QUIT DEBUG] mobs.yml LB: timer=" + timer + " ready=" + rdy);
+                            debugLog("[QUIT DEBUG] mobs.yml LB: timer=" + timer + " ready=" + rdy);
                         }
                     }
                 }
@@ -8382,7 +8376,7 @@ public List<String> getMobPoints(String baseName) {
         lastStealMessage.remove(p);
         sellMenuEntity.remove(p);
         stealingPlayers.remove(p);
-        getLogger().warning("========== [QUIT DEBUG] Завершено ==========");
+        debugLog("========== [QUIT DEBUG] Завершено ==========");
     }
     private void savePlayerMobsInstantly(String playerName) {
         if (playerName == null || playerName.isEmpty()) return;

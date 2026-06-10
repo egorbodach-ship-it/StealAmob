@@ -126,7 +126,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
             
             List<String> alts = new ArrayList<>();
             String ip = playersConfig.getString("players." + targetName.toLowerCase());
-            if (target.isOnline()) ip = target.getPlayer().getAddress().getAddress().getHostAddress();
+            if (target.isOnline() && target.getPlayer() != null && target.getPlayer().getAddress() != null) ip = target.getPlayer().getAddress().getAddress().getHostAddress();
             
             if (ip != null) {
                 List<String> found = playersConfig.getStringList("ips." + ip.replace(".", "_"));

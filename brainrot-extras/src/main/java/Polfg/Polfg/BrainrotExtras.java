@@ -710,8 +710,8 @@ public class BrainrotExtras extends JavaPlugin implements Listener, CommandExecu
             @Override
             public void run() {
                 if (!p1.isOnline() || !p2.isOnline()) {
-                    if (p1.isOnline()) { economy.depositPlayer(p1, bet.amount); animationLock.remove(p1.getUniqueId()); }
-                    if (p2.isOnline()) { economy.depositPlayer(p2, bet.amount); animationLock.remove(p2.getUniqueId()); }
+                    economy.depositPlayer(p1, bet.amount); animationLock.remove(p1.getUniqueId());
+                    economy.depositPlayer(p2, bet.amount); animationLock.remove(p2.getUniqueId());
                     cancel();
                     return;
                 }

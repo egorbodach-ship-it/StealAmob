@@ -1030,6 +1030,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                     if (e.getType() != EntityType.ITEM_DISPLAY) continue;
                     if (!e.getScoreboardTags().contains("aj.luckyblock.root")) continue;
                     if (e.getPassengers().isEmpty()) continue;
+                    if (e.getScoreboardTags().stream().anyMatch(t -> t.startsWith("brlb_"))) continue;
                     double d = e.getLocation().distanceSquared(at);
                     if (d < best) { best = d; root = e; }
                 }
@@ -1708,10 +1709,10 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                     mobSnowyCache.put(mob, snowNow);
                     refreshMobNameTags(mob);
                 }
-                if (buyer == null || !buyer.isOnline()) { cleanupMob(mob); cleanup(); return; }
+                if (buyer == null || !buyer.isOnline()) { refundMob(buyer, data); cleanupMob(mob); cleanup(); return; }
                 Player currentBuyer = mobBuyers.get(mob);
                 if (currentBuyer == null || !currentBuyer.equals(buyer)) { cleanup(); return; }
-                if (!mob.isValid() || mob.isDead()) { cleanup(); return; }
+                if (!mob.isValid() || mob.isDead()) { refundMob(buyer, data); cleanup(); return; }
                 Mutation base = mobMutations.getOrDefault(mob, Mutation.NONE);
                 tickMutationParticles(mob, base, tick);
                 if (isSnowy(mob)) tickMutationParticles(mob, Mutation.SNOWY, tick);
@@ -1762,7 +1763,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 if (hitbox != null && hitbox.isValid()) hitbox.teleport(holoBase.clone().add(0, 0.75, 0));
                 lastLoc = mob.getLocation().clone();
                 updateNameTagsPosition(mob, holoBase, nameTagHeight);
-                if (tick >= 6000) { buyer.sendMessage("§c✖ Моб не дошёл до базы!"); cleanupMob(mob); cleanup(); }
+                if (tick >= 6000) { buyer.sendMessage("§c✖ Моб не дошёл до базы!"); refundMob(buyer, data); cleanupMob(mob); cleanup(); }
             }
             void cleanup() { cancel(); deliveryTasks.remove(mob); mobBuyers.remove(mob); deliveryDestinations.remove(mob); }
         };
@@ -1795,10 +1796,17 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         return null;
     }
 
+    private void refundMob(Player buyer, MobData data) {
+        if (economy == null || buyer == null || data == null) return;
+        economy.depositPlayer(Bukkit.getOfflinePlayer(buyer.getUniqueId()), data.price);
+        if (buyer.isOnline()) buyer.sendMessage("§e↩ Возврат §6$" + formatNumber(data.price) + " §e(моб не доставлен)");
+    }
+
     private void completeDelivery(Entity mob, Player buyer, Location loc, MobData data, String baseName) {
         BrainrotBases plugin = BrainrotBases.getInstance();
         if (plugin == null) {
             buyer.sendMessage("§c✖ Ошибка! Плагин баз не найден.");
+            refundMob(buyer, data);
             cleanupMob(mob);
             return;
         }
@@ -1808,6 +1816,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             String point = (String) m1.invoke(plugin, baseName);
             if (point == null) {
                 buyer.sendMessage("§c✖ Нет свободных мест на базе!");
+                refundMob(buyer, data);
                 cleanupMob(mob);
                 return;
             }
@@ -1851,6 +1860,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         } catch (Exception e) {
             getLogger().severe("Delivery error: " + e.getMessage());
             buyer.sendMessage("§c✖ Ошибка доставки!");
+            refundMob(buyer, data);
             org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage());
         } finally {
             cleanupMob(mob);
