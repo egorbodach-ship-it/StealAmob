@@ -11,6 +11,8 @@ import java.util.List;
 public class TextHologramData extends HologramData {
     public TextHologramData(String name, Location location) {}
     public void setText(List<?> text) {}
+    public List<String> getText() { return null; }
+    public void setLocation(Location location) {}
     public void setBackground(Object background) {}
     public void setBillboard(Display.Billboard billboard) {}
     public void setScale(Vector3f scale) {}

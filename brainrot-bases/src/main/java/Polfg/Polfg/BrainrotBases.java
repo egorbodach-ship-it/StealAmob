@@ -7609,8 +7609,9 @@ private boolean isBaseMob(Entity entity) {
     }
     private void executeRebirth(Player player, int firstMobCount, int secondMobCount, int currentRebirthCount) {
         try {
-            if (Polfg.Polfg.BrainrotExtras.get() != null) {
-                Polfg.Polfg.BrainrotExtras.get().cancelPlayerBets(player);
+            org.bukkit.plugin.Plugin extrasPlugin = Bukkit.getPluginManager().getPlugin("BrainrotExtras");
+            if (extrasPlugin != null) {
+                extrasPlugin.getClass().getMethod("cancelPlayerBets", Player.class).invoke(extrasPlugin, player);
             }
         } catch (Exception e) {
             Bukkit.getLogger().warning("Не удалось очистить ставки казино для " + player.getName() + " (возможно плагин Extras не загружен)");

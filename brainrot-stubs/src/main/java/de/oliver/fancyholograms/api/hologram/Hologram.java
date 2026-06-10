@@ -8,4 +8,5 @@ public interface Hologram {
     HologramData getData();
     void queueUpdate();
     void createHologram();
+    void refreshForViewers();
 }
