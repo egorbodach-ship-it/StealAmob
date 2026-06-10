@@ -184,7 +184,7 @@ public final class BrainrotShop extends JavaPlugin implements Listener, CommandE
     public void onDisable() {
         // __leakfix__
         try { org.bukkit.Bukkit.getScheduler().cancelTasks(this); } catch (Throwable __t) {}
-        try { org.bukkit.event.HandlerList.unregisterAll(this); } catch (Throwable __t) {}
+        try { org.bukkit.event.HandlerList.unregisterAll((org.bukkit.plugin.Plugin) this); } catch (Throwable __t) {}
         for (TrapData data : new ArrayList<>(this.placedTraps.values())) {
             Location loc = data.location;
             if (loc != null && loc.getWorld() != null) {

@@ -47,7 +47,7 @@ public class SpawnWorld extends JavaPlugin implements Listener, CommandExecutor 
     public void onDisable() {
         // __leakfix__
         try { org.bukkit.Bukkit.getScheduler().cancelTasks(this); } catch (Throwable __t) {}
-        try { org.bukkit.event.HandlerList.unregisterAll(this); } catch (Throwable __t) {}
+        try { org.bukkit.event.HandlerList.unregisterAll((org.bukkit.plugin.Plugin) this); } catch (Throwable __t) {}
         // Сохраняем мир перед выключением
         World targetWorld = Bukkit.getWorld(targetWorldName);
         if (targetWorld != null) {

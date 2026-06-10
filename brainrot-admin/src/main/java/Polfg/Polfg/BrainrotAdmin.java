@@ -31,7 +31,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
     public void onDisable() {
         // __leakfix__
         try { org.bukkit.Bukkit.getScheduler().cancelTasks(this); } catch (Throwable __t) {}
-        try { org.bukkit.event.HandlerList.unregisterAll(this); } catch (Throwable __t) {}
+        try { org.bukkit.event.HandlerList.unregisterAll((org.bukkit.plugin.Plugin) this); } catch (Throwable __t) {}
     }
     private final Object ioLock = new Object();
     public void saveConfigAsync(final org.bukkit.configuration.file.FileConfiguration cfg, final java.io.File file) throws java.io.IOException {

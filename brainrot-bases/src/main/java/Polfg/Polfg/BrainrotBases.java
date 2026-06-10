@@ -1404,7 +1404,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
     public void onDisable() {
         // __leakfix__
         try { org.bukkit.Bukkit.getScheduler().cancelTasks(this); } catch (Throwable __t) {}
-        try { org.bukkit.event.HandlerList.unregisterAll(this); } catch (Throwable __t) {}
+        try { org.bukkit.event.HandlerList.unregisterAll((org.bukkit.plugin.Plugin) this); } catch (Throwable __t) {}
         moneyTimerRunning = false;
         getLogger().info("=== ВЫКЛЮЧЕНИЕ ПЛАГИНА ===");
         getLogger().info("Мобы уже сохранены в реальном времени, пропускаем сохранение");

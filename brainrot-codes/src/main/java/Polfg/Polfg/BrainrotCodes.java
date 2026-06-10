@@ -58,7 +58,7 @@ public class BrainrotCodes extends JavaPlugin implements CommandExecutor {
     public void onDisable() {
         // __leakfix__
         try { org.bukkit.Bukkit.getScheduler().cancelTasks(this); } catch (Throwable __t) {}
-        try { org.bukkit.event.HandlerList.unregisterAll(this); } catch (Throwable __t) {}
+        try { org.bukkit.event.HandlerList.unregisterAll((org.bukkit.plugin.Plugin) this); } catch (Throwable __t) {}
         saveData();
     }
 
