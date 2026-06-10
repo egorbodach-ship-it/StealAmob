@@ -1,0 +1,10 @@
+name: BrainrotEvents
+version: '${project.version}'
+main: Polfg.Polfg.BrainrotEvents
+api-version: '1.20'
+author: Polfg
+softdepend: [FastAsyncWorldEdit, WorldEdit, WorldGuard]
+commands:
+  brainrotevent:
+    description: Manage Brainrot events
+    usage: /brainrotevent

@@ -1,0 +1,28 @@
+name: BrainrotBases
+version: '${project.version}'
+main: Polfg.Polfg.BrainrotBases
+api-version: '1.20'
+author: Polfg
+depend: [Vault]
+softdepend: [PlaceholderAPI, FancyHolograms, WorldGuard, WorldEdit]
+commands:
+  resetrebirth:
+    description: Reset a player's rebirth
+  friend:
+    description: Manage base friends
+  clearoccupied:
+    description: Clear occupied bases
+  fixcollectors:
+    description: Fix base collectors
+  reloadholograms:
+    description: Reload holograms
+  brreload:
+    description: Reload BrainrotBases config
+  rebirth:
+    description: Perform a rebirth
+  clearbasemobs:
+    description: Clear mobs in a base
+  mobdebug:
+    description: Debug mob data
+  savemobs:
+    description: Force-save mob data

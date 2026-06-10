@@ -1,0 +1,10 @@
+name: BrainrotCodes
+version: '${project.version}'
+main: Polfg.Polfg.BrainrotCodes
+api-version: '1.20'
+author: Polfg
+softdepend: [BrainrotBases]
+commands:
+  code:
+    description: Redeem a promo code
+    usage: /code <code>

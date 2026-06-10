@@ -1,0 +1,9 @@
+name: SpawnWorld
+version: '${project.version}'
+main: Polfg.Polfg.SpawnWorld
+api-version: '1.20'
+author: Polfg
+commands:
+  spawnworld:
+    description: Manage the spawn world
+    usage: /spawnworld
