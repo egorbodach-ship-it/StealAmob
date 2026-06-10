@@ -66,6 +66,26 @@ import java.text.DecimalFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 public class BrainrotBases extends JavaPlugin implements Listener {
+    private final Object ioLock = new Object();
+    public void saveConfigAsync(final org.bukkit.configuration.file.FileConfiguration cfg, final java.io.File file) throws java.io.IOException {
+        if (cfg == null || file == null) return;
+        final String data = cfg.saveToString();
+        final byte[] bytes = data.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if (!isEnabled()) {
+            synchronized (ioLock) {
+                try { java.nio.file.Files.write(file.toPath(), bytes); }
+                catch (java.io.IOException e) { getLogger().warning("Ошибка сохранения " + file.getName() + ": " + e.getMessage()); }
+            }
+            return;
+        }
+        org.bukkit.Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            synchronized (ioLock) {
+                try { java.nio.file.Files.write(file.toPath(), bytes); }
+                catch (java.io.IOException e) { getLogger().warning("Ошибка сохранения " + file.getName() + ": " + e.getMessage()); }
+            }
+        });
+    }
+
     private enum KickReason {
         REGION,
         PARTICLE_WALL
@@ -1093,7 +1113,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                 }
                 if (!hasBase) {
                     playersToRemove.add(playerName);
-                    getLogger().info("Очищены устаревшие мобы игрока без базы: " + playerName);
+                    debugLog("Очищены устаревшие мобы игрока без базы: " + playerName);
                 }
             }
             for (String playerName : playersToRemove) {
@@ -1233,7 +1253,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         }, 100L, 100L);
     }
     private void restoreMobFromSavedData(String base, String mobPoint) {
-        getLogger().info("Восстановление моба на точке " + mobPoint);
+        debugLog("Восстановление моба на точке " + mobPoint);
         String owner = bases.get(base);
         if (owner == null || owner.equals("none")) {
             getLogger().warning("База без владельца");
@@ -1245,7 +1265,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         if (ownerPlayer != null) {
             long lastRebirthTime = getLastRebirthTime(ownerPlayer);
             if (lastRebirthTime > 0 && System.currentTimeMillis() - lastRebirthTime < 5 * 60 * 1000) {
-                getLogger().info("Недавнее перерождение, пропускаем");
+                debugLog("Недавнее перерождение, пропускаем");
                 Set<String> occupied = occupiedMobPoints.get(base);
                 if (occupied != null) occupied.remove(mobPoint);
                 return;
@@ -1260,7 +1280,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         }
         for (SavedMobData savedMob : savedMobs) {
             if (savedMob.base.equals(base) && savedMob.mobPoint.equals(mobPoint)) {
-                getLogger().info("Найден моб " + savedMob.mobType.name + " для точки " + mobPoint);
+                debugLog("Найден моб " + savedMob.mobType.name + " для точки " + mobPoint);
                 spawnMobAtPointExact(base, mobPoint, savedMob.collectorPoint, savedMob.mobType);
                 if (ownerPlayer != null && ownerPlayer.isOnline()) {
                     ownerPlayer.sendMessage("§a⚡ Моб §e" + savedMob.mobType.name + "§a восстановлен!");
@@ -1300,7 +1320,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         Chunk chunk = location.getChunk();
         if (!chunk.isLoaded()) {
             chunk.load();
-            getLogger().info("Чанк загружен: " + chunk.getX() + "," + chunk.getZ());
+            debugLog("Чанк загружен: " + chunk.getX() + "," + chunk.getZ());
         }
         try {
             chunk.setForceLoaded(true);
@@ -1502,7 +1522,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             return false;
         }
         boolean hasFreeSlots = occupied.size() < mobPoints.size();
-        getLogger().info("База " + baseName + ": " + occupied.size() + "/" + mobPoints.size() + " слотов занято. Свободно: " + hasFreeSlots);
+        debugLog("База " + baseName + ": " + occupied.size() + "/" + mobPoints.size() + " слотов занято. Свободно: " + hasFreeSlots);
         return hasFreeSlots;
     }
     public String getBaseInfo(String playerName) {
@@ -1556,37 +1576,37 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                 otherBases.add(baseName);
             }
         }
-        getLogger().info("========== ВЫБОР БАЗЫ ==========");
-        getLogger().info("Свободные базы в world: " + worldBases.size() + " " + worldBases);
-        getLogger().info("Свободные базы в world2: " + world2Bases.size() + " " + world2Bases);
+        debugLog("========== ВЫБОР БАЗЫ ==========");
+        debugLog("Свободные базы в world: " + worldBases.size() + " " + worldBases);
+        debugLog("Свободные базы в world2: " + world2Bases.size() + " " + world2Bases);
         if (!otherBases.isEmpty()) {
-            getLogger().info("Свободные базы в других мирах: " + otherBases.size() + " " + otherBases);
+            debugLog("Свободные базы в других мирах: " + otherBases.size() + " " + otherBases);
         }
         if (!worldBases.isEmpty()) {
             int randomIndex = random.nextInt(worldBases.size());
             String selectedBase = worldBases.get(randomIndex);
-            getLogger().info("✓ Выбрана база из world: " + selectedBase);
-            getLogger().info("=================================");
+            debugLog("✓ Выбрана база из world: " + selectedBase);
+            debugLog("=================================");
             return selectedBase;
         }
-        getLogger().info("⚠ Все базы в world заняты! Переходим к world2...");
+        debugLog("⚠ Все базы в world заняты! Переходим к world2...");
         if (!world2Bases.isEmpty()) {
             int randomIndex = random.nextInt(world2Bases.size());
             String selectedBase = world2Bases.get(randomIndex);
-            getLogger().info("✓ Выбрана база из world2: " + selectedBase);
-            getLogger().info("=================================");
+            debugLog("✓ Выбрана база из world2: " + selectedBase);
+            debugLog("=================================");
             return selectedBase;
         }
-        getLogger().info("⚠ Все базы в world2 тоже заняты!");
+        debugLog("⚠ Все базы в world2 тоже заняты!");
         if (!otherBases.isEmpty()) {
             int randomIndex = random.nextInt(otherBases.size());
             String selectedBase = otherBases.get(randomIndex);
-            getLogger().info("✓ Выбрана база из другого мира: " + selectedBase);
-            getLogger().info("=================================");
+            debugLog("✓ Выбрана база из другого мира: " + selectedBase);
+            debugLog("=================================");
             return selectedBase;
         }
-        getLogger().warning("✗ Нет свободных баз ни в одном мире!");
-        getLogger().info("=================================");
+        debugLog("✗ Нет свободных баз ни в одном мире!");
+        debugLog("=================================");
         return null;
     }
     private void startUnifiedKickTimer() {
@@ -1925,7 +1945,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                 loc.setYaw(180.0f);
             }
             loc.setPitch(0.0f);
-            getLogger().info("Kick location для базы " + base + ": " + loc + " (reversed: " + isReversedBase(base) + ")");
+            debugLog("Kick location для базы " + base + ": " + loc + " (reversed: " + isReversedBase(base) + ")");
             return loc;
         } catch (NumberFormatException e) {
             getLogger().warning("Ошибка парсинга координат kick_point: " + kickPoint);
@@ -2300,7 +2320,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             if (!entity.isDead()) {
                 entity.remove();
             }
-            getLogger().info("[SELL] Lucky Block полностью удалён при продаже");
+            debugLog("[SELL] Lucky Block полностью удалён при продаже");
         } else if (rotWalkerTags.containsKey(entity) ||
                    entity.getScoreboardTags().contains(TAG_ROT_WALKER_BASE) ||
                    entity.getScoreboardTags().contains("ROT_WALKER_ANIMATED")) {
@@ -2342,7 +2362,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                 });
             }
             if (!entity.isDead()) entity.remove();
-            getLogger().info("[SELL] Гнилоход полностью удалён при продаже");
+            debugLog("[SELL] Гнилоход полностью удалён при продаже");
         } else {
             removeMobHologram(entity);
             if (mobPoint != null) {
@@ -2649,7 +2669,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                         }
                         if (!hasLiveLB) {
                             nearby.remove();
-                            getLogger().info("[STEAL] Удалён оставшийся хитбокс: " + nearby.getUniqueId());
+                            debugLog("[STEAL] Удалён оставшийся хитбокс: " + nearby.getUniqueId());
                         }
                     }
                 }
@@ -2832,7 +2852,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                 Set<String> origOccupied = occupiedMobPoints.get(data.originalBase);
                 if (origOccupied != null) {
                     origOccupied.remove(originalMobPoint);
-                    getLogger().info("[STEAL] Точка " + originalMobPoint + " освобождена при доставке LB");
+                    debugLog("[STEAL] Точка " + originalMobPoint + " освобождена при доставке LB");
                 }
             }
             String freePoint = findFreeMobPoint(playerBase);
@@ -2886,7 +2906,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             String origMobPoint = findOriginalMobPoint(origBase, data.originalLocation);
             if (origMobPoint != null) {
                 origOccupied.remove(origMobPoint);
-                getLogger().info("[STEAL] Точка " + origMobPoint + " освобождена при доставке моба");
+                debugLog("[STEAL] Точка " + origMobPoint + " освобождена при доставке моба");
             }
         }
         String origOwner = bases.get(origBase);
@@ -2932,7 +2952,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             cancelStealing(victim, true);
             return;
         }
-        getLogger().info("Возврат моба: " + data.mob.getType() + " на базу " + data.originalBase);
+        debugLog("Возврат моба: " + data.mob.getType() + " на базу " + data.originalBase);
         victim.removePassenger(data.mob);
         data.mob.removeScoreboardTag("STOLEN_MOB");
         data.mob.removeScoreboardTag("CARRYING_" + victim.getUniqueId());
@@ -3046,7 +3066,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         attacker.playSound(attacker.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1f, 1f);
         data.originalLocation.getWorld().spawnParticle(Particle.HEART,
             data.originalLocation, 10, 0.5, 0.5, 0.5, 0.1);
-        getLogger().info("Моб успешно возвращен на точку " + mobPoint);
+        debugLog("Моб успешно возвращен на точку " + mobPoint);
     }
  private void loadFriends() {
      friendsFile = new File(getDataFolder(), "friends.yml");
@@ -3095,7 +3115,7 @@ private void initRebirthsFile() {
 private void saveRebirthsFile() {
   if (rebirthsConfig == null || rebirthsFile == null) return;
   try {
-      rebirthsConfig.save(rebirthsFile);
+      saveConfigAsync(rebirthsConfig, rebirthsFile);
   } catch (IOException e) {
       getLogger().severe("Ошибка сохранения rebirths.yml: " + e.getMessage());
   }
@@ -3141,7 +3161,7 @@ private void migrateRebirthsFromConfig() {
          }
      }
      try {
-         friendsConfig.save(friendsFile);
+         saveConfigAsync(friendsConfig, friendsFile);
      } catch (IOException e) {
          getLogger().severe("Ошибка сохранения friends.yml: " + e.getMessage());
      }
@@ -3452,11 +3472,11 @@ private boolean isBaseMob(Entity entity) {
         List<String> mobPoints = baseMobSpawnPoints.get(base);
         Set<String> occupied = occupiedMobPoints.get(base);
         if (mobPoints == null) {
-            getLogger().warning("findFreeMobPoint: mobPoints = null для базы " + base);
+            debugLog("findFreeMobPoint: mobPoints = null для базы " + base);
             return null;
         }
         if (occupied == null) {
-            getLogger().warning("findFreeMobPoint: occupied = null для базы " + base + ", создаём новый набор");
+            debugLog("findFreeMobPoint: occupied = null для базы " + base + ", создаём новый набор");
             occupied = new HashSet<>();
             occupiedMobPoints.put(base, occupied);
         }
@@ -3483,7 +3503,7 @@ private boolean isBaseMob(Entity entity) {
                 }
             }
         }
-        getLogger().warning("findFreeMobPoint: все " + mobPoints.size() + " точек заняты на базе " + base);
+        debugLog("findFreeMobPoint: все " + mobPoints.size() + " точек заняты на базе " + base);
         return null;
     }
     private void registerClearOccupiedCommand() {
@@ -3617,7 +3637,7 @@ private boolean isBaseMob(Entity entity) {
                         collectorPoint = findFreeCollectorForBase(data.originalBase, collectorPoints);
                     }
                     spawnMobAtPoint(data.originalBase, mobPoint, collectorPoint, MobType.SPONGE);
-                    getLogger().info("Lucky Block возвращён на базу " + data.originalBase);
+                    debugLog("Lucky Block возвращён на базу " + data.originalBase);
                 }
             }
             if (notify) {
@@ -3627,7 +3647,7 @@ private boolean isBaseMob(Entity entity) {
             return;
         }
         if (data.isCarrying && data.mob != null && !data.mob.isDead()) {
-            getLogger().info("Отмена кражи - возврат моба на место");
+            debugLog("Отмена кражи - возврат моба на место");
             player.removePassenger(data.mob);
             data.mob.removeScoreboardTag("STOLEN_MOB");
             data.mob.removeScoreboardTag("CARRYING_" + player.getUniqueId());
@@ -3718,7 +3738,7 @@ private boolean isBaseMob(Entity entity) {
         }
         for (String collectorId : collectorsToRemove) {
             removeCollectorHologram(collectorId);
-            getLogger().info("Очищен коллектор при восстановлении: " + collectorId);
+            debugLog("Очищен коллектор при восстановлении: " + collectorId);
         }
         List<String> mobPoints = baseMobSpawnPoints.get(base);
         if (mobPoints != null) {
@@ -4054,7 +4074,7 @@ private boolean isBaseMob(Entity entity) {
             getLogger().info("Нет сохраненных мобов для перемещения игрока " + playerName);
             return;
         }
-        getLogger().info("Перемещение " + savedMobs.size() + " мобов игрока " + playerName + " на базу " + newBase);
+        debugLog("Перемещение " + savedMobs.size() + " мобов игрока " + playerName + " на базу " + newBase);
         cleanupOldCollectorHologramsForPlayer(playerName);
         List<SavedMobData> updatedMobs = new ArrayList<>();
         List<String> newMobPoints = baseMobSpawnPoints.get(newBase);
@@ -4081,7 +4101,7 @@ private boolean isBaseMob(Entity entity) {
                 savedMob.mutation,
                 savedMob.snowy
             ));
-            getLogger().info("  Перемещён: " + savedMob.mobType.name +
+            debugLog("  Перемещён: " + savedMob.mobType.name +
                 " mut=" + savedMob.mutation + " snowy=" + savedMob.snowy +
                 " -> " + mobPoint);
             mobPointIndex++;
@@ -4178,8 +4198,8 @@ private boolean isBaseMob(Entity entity) {
             }
             savedPlayerMobs.put(playerName, currentMobs);
             try {
-                mobsConfig.save(mobsFile);
-                getLogger().info("=== Сохранено " + currentMobs.size() + " мобов для " + playerName + " ===");
+                saveConfigAsync(mobsConfig, mobsFile);
+                debugLog("=== Сохранено " + currentMobs.size() + " мобов для " + playerName + " ===");
             } catch (IOException e) {
                 getLogger().severe("Ошибка сохранения mobs.yml: " + e.getMessage());
             }
@@ -4187,7 +4207,7 @@ private boolean isBaseMob(Entity entity) {
             getLogger().info("У игрока " + playerName + " нет мобов для сохранения.");
             savedPlayerMobs.remove(playerName);
             try {
-                mobsConfig.save(mobsFile);
+                saveConfigAsync(mobsConfig, mobsFile);
             } catch (IOException e) {
                 getLogger().severe("Ошибка сохранения mobs.yml: " + e.getMessage());
             }
@@ -4261,7 +4281,7 @@ private boolean isBaseMob(Entity entity) {
             debugLog("Сохранено " + mobs.size() + " мобов для игрока " + playerName);
         }
         try {
-            mobsConfig.save(mobsFile);
+            saveConfigAsync(mobsConfig, mobsFile);
             getLogger().info("Все мобы сохранены в mobs.yml!");
         } catch (IOException e) {
             getLogger().warning("Ошибка сохранения mobs.yml: " + e.getMessage());
@@ -4450,7 +4470,7 @@ private boolean isBaseMob(Entity entity) {
                 mobsConfig.set(path + ".luckyBlockReady", m.luckyBlockReady);
             }
         }
-        try { mobsConfig.save(mobsFile); } catch (IOException e) {}
+        try { saveConfigAsync(mobsConfig, mobsFile); } catch (IOException e) {}
     }
     public void adminSetMutation(String playerName, int index, String mutationName, boolean snowy) {
         if (mobsConfig == null || savedPlayerMobs == null) return;
@@ -4467,7 +4487,7 @@ private boolean isBaseMob(Entity entity) {
         String path = "mobs." + playerName + "." + index;
         mobsConfig.set(path + ".mutation", mutationName);
         mobsConfig.set(path + ".snowy", snowy);
-        try { mobsConfig.save(mobsFile); } catch (IOException e) {}
+        try { saveConfigAsync(mobsConfig, mobsFile); } catch (IOException e) {}
         for (Map.Entry<Entity, String> entry : entityToPointMap.entrySet()) {
             if (entry.getValue().equals(oldData.mobPoint)) {
                 Entity mob = entry.getKey();
@@ -5578,7 +5598,7 @@ private boolean isBaseMob(Entity entity) {
                 }
             }
         }
-        getLogger().info("✓ Моб " + type.name + " восстановлен на точке " + mobPoint);
+        debugLog("✓ Моб " + type.name + " восстановлен на точке " + mobPoint);
         final Entity finalMob = mob;
         Bukkit.getScheduler().runTaskLater(this, () -> {
             if (finalMob != null && !finalMob.isDead()) {
@@ -7661,7 +7681,7 @@ private boolean isBaseMob(Entity entity) {
         savedPlayerMobs.remove(player.getName());
         if (mobsConfig != null) {
             mobsConfig.set("mobs." + player.getName(), null);
-            try { mobsConfig.save(mobsFile); } catch (IOException e) {}
+            try { saveConfigAsync(mobsConfig, mobsFile); } catch (IOException e) {}
         }
         saveRebirthData(player);
         setPlayerEarnMultiplier(player);
@@ -7878,7 +7898,7 @@ private boolean isBaseMob(Entity entity) {
         if (mobsConfig != null) {
             mobsConfig.set("mobs." + player.getName(), null);
             try {
-                mobsConfig.save(mobsFile);
+                saveConfigAsync(mobsConfig, mobsFile);
             } catch (IOException e) {
                 getLogger().warning("Ошибка сохранения: " + e.getMessage());
             }
@@ -8191,7 +8211,7 @@ public List<String> getMobPoints(String baseName) {
         Player p = e.getPlayer();
         String playerName = p.getName();
         Bukkit.getScheduler().runTaskLater(this, () -> {
-            getLogger().warning("========== [JOIN DEBUG] Вход " + playerName + " ==========");
+            debugLog("========== [JOIN DEBUG] Вход " + playerName + " ==========");
             List<SavedMobData> savedMobs = savedPlayerMobs.get(playerName);
             boolean hasSavedMobs = savedMobs != null && !savedMobs.isEmpty();
             if (hasSavedMobs) {
@@ -8270,7 +8290,7 @@ public List<String> getMobPoints(String baseName) {
             if (rebirthCount > 0) {
                 sendCooldownMessage(p, "§6Перерождений: §e" + rebirthCount + " §6| Множитель: §e" + getPlayerMultiplier(p) + "x", lastCollectMessage);
             }
-            getLogger().warning("========== [JOIN DEBUG] Завершено ==========");
+            debugLog("========== [JOIN DEBUG] Завершено ==========");
         }, 20L);
     }
     @EventHandler
@@ -8381,7 +8401,7 @@ public List<String> getMobPoints(String baseName) {
             mobsConfig.set("mobs." + playerName, null);
             savedPlayerMobs.remove(playerName);
             try {
-                mobsConfig.save(mobsFile);
+                saveConfigAsync(mobsConfig, mobsFile);
             } catch (IOException e) {
                 getLogger().severe("ОШИБКА записи mobs.yml (no base): " + e.getMessage());
             }
@@ -8462,7 +8482,7 @@ public List<String> getMobPoints(String baseName) {
             savedPlayerMobs.put(playerName, inMemory);
         }
         try {
-            mobsConfig.save(mobsFile);
+            saveConfigAsync(mobsConfig, mobsFile);
             debugLog("Сохранено " + savedCount + " мобов для игрока " + playerName);
         } catch (IOException e) {
             getLogger().severe("ОШИБКА записи mobs.yml: " + e.getMessage());
@@ -8602,7 +8622,7 @@ public List<String> getMobPoints(String baseName) {
                 e.printStackTrace();
             }
         }
-        getLogger().info("=====================================");
+        debugLog("=====================================");
     }
     private void registerDebugCommand() {
         PluginCommand command = getCommand("mobdebug");

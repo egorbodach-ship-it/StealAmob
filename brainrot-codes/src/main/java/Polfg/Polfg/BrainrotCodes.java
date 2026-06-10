@@ -19,6 +19,26 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class BrainrotCodes extends JavaPlugin implements CommandExecutor {
+    private final Object ioLock = new Object();
+    public void saveConfigAsync(final org.bukkit.configuration.file.FileConfiguration cfg, final java.io.File file) throws java.io.IOException {
+        if (cfg == null || file == null) return;
+        final String data = cfg.saveToString();
+        final byte[] bytes = data.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        if (!isEnabled()) {
+            synchronized (ioLock) {
+                try { java.nio.file.Files.write(file.toPath(), bytes); }
+                catch (java.io.IOException e) { getLogger().warning("Ошибка сохранения " + file.getName() + ": " + e.getMessage()); }
+            }
+            return;
+        }
+        org.bukkit.Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            synchronized (ioLock) {
+                try { java.nio.file.Files.write(file.toPath(), bytes); }
+                catch (java.io.IOException e) { getLogger().warning("Ошибка сохранения " + file.getName() + ": " + e.getMessage()); }
+            }
+        });
+    }
+
 
     private File dataFile;
     private FileConfiguration dataConfig;
@@ -254,7 +274,7 @@ public class BrainrotCodes extends JavaPlugin implements CommandExecutor {
 
     private void saveData() {
         try {
-            dataConfig.save(dataFile);
+            saveConfigAsync(dataConfig, dataFile);
         } catch (IOException e) {
             e.printStackTrace();
         }
