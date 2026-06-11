@@ -3,8 +3,11 @@ version: '${project.version}'
 main: Polfg.Polfg.BrainrotEvents
 api-version: '1.20'
 author: Polfg
-softdepend: [FastAsyncWorldEdit, WorldEdit, WorldGuard]
 commands:
-  brainrotevent:
-    description: Manage Brainrot events
-    usage: /brainrotevent
+  brainrotmusic:
+    description: Manage Brainrot background music
+    usage: /brainrotmusic <on|off|restart|reload|status>
+permissions:
+  brainrotevents.admin:
+    description: Manage Brainrot background music
+    default: op

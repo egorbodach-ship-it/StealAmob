@@ -1034,7 +1034,14 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                     if (d < best) { best = d; root = e; }
                 }
                 if (root == null) {
-                    if (tries >= 60) { onReady.accept(null); cancel(); }
+                    if (tries >= 60) {
+                        try { // __fix__ kill orphan model on summon timeout
+                            String dim = world.getKey().toString();
+                            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), String.format(Locale.US, "execute in %s positioned %.3f %.3f %.3f run minecraft:kill @e[type=item_display,tag=aj.luckyblock.root,distance=..2]", dim, at.getX(), at.getY(), at.getZ()));
+                            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), String.format(Locale.US, "execute in %s positioned %.3f %.3f %.3f run minecraft:kill @e[tag=aj.luckyblock.entity,distance=..3]", dim, at.getX(), at.getY(), at.getZ()));
+                        } catch (Throwable __t) {}
+                        onReady.accept(null); cancel();
+                    }
                     return;
                 }
                 if (root instanceof Display dr) dr.setTeleportDuration(0);
@@ -1097,7 +1104,14 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                     if (d < best) { best = d; root = e; }
                 }
                 if (root == null) {
-                    if (tries >= 60) { onReady.accept(null); cancel(); }
+                    if (tries >= 60) {
+                        try { // __fix__ kill orphan model on summon timeout
+                            String dim = world.getKey().toString();
+                            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), String.format(Locale.US, "execute in %s positioned %.3f %.3f %.3f run minecraft:kill @e[type=item_display,tag=" + ROT_WALKER_ROOT_TAG + ",distance=..2]", dim, at.getX(), at.getY(), at.getZ()));
+                            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), String.format(Locale.US, "execute in %s positioned %.3f %.3f %.3f run minecraft:kill @e[tag=" + ROT_WALKER_ENTITY_TAG + ",distance=..3]", dim, at.getX(), at.getY(), at.getZ()));
+                        } catch (Throwable __t) {}
+                        onReady.accept(null); cancel();
+                    }
                     return;
                 }
                 if (root instanceof Display dr) dr.setTeleportDuration(0);
@@ -1773,7 +1787,21 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private static final Vector LUCKY_MODEL_OFFSET = new Vector(0.55, 0.0, 0.1);
 
     private Location getLuckyVisualCenter(Location rootLoc) {
-        return rootLoc.clone().add(LUCKY_MODEL_OFFSET);
+        // __fix__ rotate model offset by yaw so the nametag stays centered in any walk direction
+        // (offset was authored in world space at yaw=180 / direction "forward")
+        return applyYawModelOffset(rootLoc, 0.55, -0.1);
+    }
+
+    // Applies a model-local offset (right = model's right side, forward = model facing)
+    // rotated by the location's yaw, so custom-model holograms stay centered regardless of
+    // walk/delivery direction.
+    private Location applyYawModelOffset(Location loc, double right, double forward) {
+        double yawRad = Math.toRadians(loc.getYaw());
+        double sin = Math.sin(yawRad);
+        double cos = Math.cos(yawRad);
+        double worldX = -cos * right - sin * forward;
+        double worldZ = -sin * right + cos * forward;
+        return loc.clone().add(worldX, 0.0, worldZ);
     }
 
     private String getLuckyUniqTag(Entity e) {

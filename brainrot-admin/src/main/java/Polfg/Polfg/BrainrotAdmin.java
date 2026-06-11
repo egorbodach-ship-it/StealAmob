@@ -483,7 +483,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
                                                 if (uniq != null) {
                                                     String dim = w.getKey().toString();
                                                     Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "execute in " + dim + " as @e[tag=" + uniq + ",limit=1] run function animated_java:luckyblock/remove");
-                                                    Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "execute in " + dim + " run kill @e[tag=" + uniq + "]");
+                                                    Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "execute in " + dim + " run minecraft:kill @e[tag=" + uniq + "]");
                                                 } else e.remove();
                                             }
                                         }

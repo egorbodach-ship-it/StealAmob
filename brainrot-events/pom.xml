@@ -10,12 +10,5 @@
     </parent>
     <artifactId>brainrot-events</artifactId>
     <packaging>jar</packaging>
-    <dependencies>
-        <dependency>
-            <groupId>com.sk89q.worldedit</groupId>
-            <artifactId>worldedit-bukkit</artifactId>
-            <version>${worldedit.version}</version>
-            <scope>provided</scope>
-        </dependency>
-    </dependencies>
+    <!-- Музыкальный модуль: внешние зависимости (WorldEdit/FAWE) больше не нужны. -->
 </project>

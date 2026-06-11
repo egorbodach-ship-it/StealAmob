@@ -112,7 +112,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         SNOWY("Снежный", "§b", 5.0);
         final String displayName;
         final String format;
-        final double incomeMultiplier;
+        double incomeMultiplier;
         Mutation(String displayName, String format, double incomeMultiplier) {
             this.displayName = displayName;
             this.format = format;
@@ -205,9 +205,9 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         ROT_WALKER("Гнилоход", EntityType.ITEM_DISPLAY, 50000.0, Material.SLIME_BALL, 9999999, true, Rarity.MYTHICAL);
         public final String name;
         public final EntityType type;
-        public final double baseIncome;
+        public double baseIncome;
         public final Material icon;
-        public final int sellPrice;
+        public int sellPrice;
         public final boolean isRare;
         public final Rarity rarity;
         MobType(String name, EntityType type, double baseIncome, Material icon, int sellPrice, boolean isRare, Rarity rarity) {
@@ -362,7 +362,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
     private final Map<String, String> collectorToEntityMap = new ConcurrentHashMap<>();
     private final Map<Entity, Long> luckyBlockOpenTime = new ConcurrentHashMap<>();
     private final Map<Entity, Boolean> luckyBlockReady = new ConcurrentHashMap<>();
-    private static final long LUCKY_BLOCK_TIMER = 15 * 60 * 1000L;
+    private static long LUCKY_BLOCK_TIMER = 15 * 60 * 1000L;
     private final Map<String, String> entityToCollectorMap = new ConcurrentHashMap<>();
     private static final MobType[] LUCKY_BLOCK_LOOT = {
     	    MobType.FROG,
@@ -430,30 +430,31 @@ public class BrainrotBases extends JavaPlugin implements Listener {
     private static final String MOB_TAG_PREFIX = "MOB_";
     private static final String RESET_ITEM_TAG = "BRAINROT_RESET_ITEM";
     private static final int RESET_ITEM_SLOT = 8;
-    private static final int MIN_COLLECT_AMOUNT = 2;
-    private static final int STEAL_TIME = 5;
+    private static int MIN_COLLECT_AMOUNT = 2;
+    private static int STEAL_TIME = 5;
     private static final double STEAL_HOLOGRAM_HEIGHT = 2.5;
-    private static final int LOCK_DURATION = 60;
-    private static final int REBIRTH_LOCK_DURATION_1 = 70;
-    private static final int REBIRTH_LOCK_DURATION_2 = 80;
-    private static final int REBIRTH_LOCK_DURATION_3 = 90;
+    private static int LOCK_DURATION = 60;
+    private static int REBIRTH_LOCK_DURATION_1 = 70;
+    private static int REBIRTH_LOCK_DURATION_2 = 80;
+    private static int REBIRTH_LOCK_DURATION_3 = 90;
     private static final int RESET_COOLDOWN_SECONDS = 10;
-    private static final int REBIRTH_LOCK_DURATION_4 = 100;
-    private static final long COLLECT_COOLDOWN = 2000L;
+    private static int REBIRTH_LOCK_DURATION_4 = 100;
+    private static long COLLECT_COOLDOWN = 2000L;
     private static final long GENERAL_MESSAGE_COOLDOWN = 2000L;
-    private static final double INITIAL_BALANCE = 500.0;
-    private static final double REBIRTH_STARTING_MONEY_1 = 5000.0;
-    private static final int REBIRTH_LOCK_DURATION_7 = 130;
-    private static final int REBIRTH_LOCK_DURATION_8 = 140;
-    private static final double REBIRTH_STARTING_MONEY_7 = 500000.0;
-    private static final double REBIRTH_STARTING_MONEY_8 = 1000000.0;
-    private static final double REBIRTH_STARTING_MONEY_2 = 5000.0;
-    private static final double REBIRTH_STARTING_MONEY_3 = 25000.0;
-    private static final int REBIRTH_LOCK_DURATION_5 = 110;
-    private static final int REBIRTH_LOCK_DURATION_6 = 120;
-    private static final double REBIRTH_STARTING_MONEY_5 = 100000.0;
-    private static final double REBIRTH_STARTING_MONEY_6 = 250000.0;
-    private static final double REBIRTH_STARTING_MONEY_4 = 50000.0;
+    private static double INITIAL_BALANCE = 500.0;
+    private static double[] REBIRTH_EARN_MULTIPLIERS = {1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 3.0, 4.0, 5.0};
+    private static double REBIRTH_STARTING_MONEY_1 = 5000.0;
+    private static int REBIRTH_LOCK_DURATION_7 = 130;
+    private static int REBIRTH_LOCK_DURATION_8 = 140;
+    private static double REBIRTH_STARTING_MONEY_7 = 500000.0;
+    private static double REBIRTH_STARTING_MONEY_8 = 1000000.0;
+    private static double REBIRTH_STARTING_MONEY_2 = 5000.0;
+    private static double REBIRTH_STARTING_MONEY_3 = 25000.0;
+    private static int REBIRTH_LOCK_DURATION_5 = 110;
+    private static int REBIRTH_LOCK_DURATION_6 = 120;
+    private static double REBIRTH_STARTING_MONEY_5 = 100000.0;
+    private static double REBIRTH_STARTING_MONEY_6 = 250000.0;
+    private static double REBIRTH_STARTING_MONEY_4 = 50000.0;
     private static final String TAG_LUCKY_BLOCK = "LUCKY_BLOCK";
     private static final String TAG_LUCKY_BLOCK_HITBOX = "LUCKY_BLOCK_HITBOX";
     private static final String TAG_CARRYING_LUCKY_BLOCK = "CARRYING_LUCKY_BLOCK";
@@ -564,6 +565,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         getConfig().addDefault("settings.collector_hologram_height", 0.3);
         getConfig().addDefault("settings.debug", false);
         getConfig().options().copyDefaults(true);
+        loadEconomyConfig();
         saveConfig();
         setupEconomy();
         getLogger().info("Очистка всех мобов при запуске...");
@@ -2523,7 +2525,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         if (isLuckyBlock) {
             player.sendTitle(
                 color("§e⚡ КРАЖА ЛАКИ-БЛОКА"),
-                color("§7Держитесь рядом 5 секунд!"),
+                color("§7Де��житесь рядом 5 секунд!"),
                 10, 70, 10
             );
             sendCooldownMessage(player, "§e⚡ Начата кража Лаки-Блока!", lastStealMessage);
@@ -6114,7 +6116,7 @@ private boolean isBaseMob(Entity entity) {
                         spawnLoc.getX(), spawnLoc.getY(), spawnLoc.getZ(),
                         finalYaw);
                 final String rotateAllCmd = String.format(Locale.US,
-                        "execute in %s as @e[tag=%s] at @s run tp @s ~ ~ ~ %.1f 0",
+                        "execute in %s as @e[tag=%s] at @s run minecraft:tp @s ~ ~ ~ %.1f 0",
                         dim, uniq, finalYaw);
                 Bukkit.dispatchCommand(Bukkit.getConsoleSender(), rotateRootCmd);
                 for (long delay : new long[]{3L, 8L, 15L, 25L, 40L}) {
@@ -6294,7 +6296,7 @@ private boolean isBaseMob(Entity entity) {
                         dim, TAG_ROT_WALKER_ROOT, uniq,
                         spawnLoc.getX(), spawnLoc.getY(), spawnLoc.getZ(), finalYaw);
                 final String rotateAllCmd = String.format(Locale.US,
-                        "execute in %s as @e[tag=%s] at @s run tp @s ~ ~ ~ %.1f 0",
+                        "execute in %s as @e[tag=%s] at @s run minecraft:tp @s ~ ~ ~ %.1f 0",
                         dim, uniq, finalYaw);
                 Bukkit.dispatchCommand(Bukkit.getConsoleSender(), rotateRootCmd);
                 for (long delay : new long[]{3L, 8L, 15L, 25L, 40L}) {
@@ -7099,46 +7101,96 @@ private boolean isBaseMob(Entity entity) {
         updateCollectorHologram(collectorId);
         player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1f, 1.5f);
     }
+    private void loadEconomyConfig() {
+        FileConfiguration cfg = getConfig();
+        cfg.addDefault("economy.initial-balance", INITIAL_BALANCE);
+        cfg.addDefault("economy.min-collect-amount", MIN_COLLECT_AMOUNT);
+        cfg.addDefault("economy.steal-time-seconds", STEAL_TIME);
+        cfg.addDefault("economy.collect-cooldown-ms", COLLECT_COOLDOWN);
+        cfg.addDefault("economy.lucky-block-timer-ms", LUCKY_BLOCK_TIMER);
+        cfg.addDefault("economy.base-lock-duration-seconds", LOCK_DURATION);
+        if (!cfg.isSet("economy.rebirth.earn-multipliers")) {
+            java.util.List<Double> em = new java.util.ArrayList<>();
+            for (double d : REBIRTH_EARN_MULTIPLIERS) em.add(d);
+            cfg.addDefault("economy.rebirth.earn-multipliers", em);
+        }
+        if (!cfg.isSet("economy.rebirth.starting-money")) {
+            java.util.List<Double> sm = new java.util.ArrayList<>();
+            sm.add(REBIRTH_STARTING_MONEY_1); sm.add(REBIRTH_STARTING_MONEY_2);
+            sm.add(REBIRTH_STARTING_MONEY_3); sm.add(REBIRTH_STARTING_MONEY_4);
+            sm.add(REBIRTH_STARTING_MONEY_5); sm.add(REBIRTH_STARTING_MONEY_6);
+            sm.add(REBIRTH_STARTING_MONEY_7); sm.add(REBIRTH_STARTING_MONEY_8);
+            cfg.addDefault("economy.rebirth.starting-money", sm);
+        }
+        if (!cfg.isSet("economy.rebirth.lock-durations")) {
+            java.util.List<Integer> ld = new java.util.ArrayList<>();
+            ld.add(REBIRTH_LOCK_DURATION_1); ld.add(REBIRTH_LOCK_DURATION_2);
+            ld.add(REBIRTH_LOCK_DURATION_3); ld.add(REBIRTH_LOCK_DURATION_4);
+            ld.add(REBIRTH_LOCK_DURATION_5); ld.add(REBIRTH_LOCK_DURATION_6);
+            ld.add(REBIRTH_LOCK_DURATION_7); ld.add(REBIRTH_LOCK_DURATION_8);
+            cfg.addDefault("economy.rebirth.lock-durations", ld);
+        }
+        for (Mutation m : Mutation.values()) {
+            if (m == Mutation.NONE) continue;
+            cfg.addDefault("economy.mutations." + m.name() + ".income-multiplier", m.incomeMultiplier);
+        }
+        for (MobType mt : MobType.values()) {
+            cfg.addDefault("economy.mobs." + mt.name() + ".base-income", mt.baseIncome);
+            cfg.addDefault("economy.mobs." + mt.name() + ".sell-price", mt.sellPrice);
+        }
+        cfg.options().copyDefaults(true);
+        saveConfig();
+        INITIAL_BALANCE = cfg.getDouble("economy.initial-balance", INITIAL_BALANCE);
+        MIN_COLLECT_AMOUNT = cfg.getInt("economy.min-collect-amount", MIN_COLLECT_AMOUNT);
+        STEAL_TIME = cfg.getInt("economy.steal-time-seconds", STEAL_TIME);
+        COLLECT_COOLDOWN = cfg.getLong("economy.collect-cooldown-ms", COLLECT_COOLDOWN);
+        LUCKY_BLOCK_TIMER = cfg.getLong("economy.lucky-block-timer-ms", LUCKY_BLOCK_TIMER);
+        LOCK_DURATION = cfg.getInt("economy.base-lock-duration-seconds", LOCK_DURATION);
+        java.util.List<Double> em = cfg.getDoubleList("economy.rebirth.earn-multipliers");
+        if (em != null && !em.isEmpty()) {
+            double[] arr = new double[em.size()];
+            for (int i = 0; i < em.size(); i++) arr[i] = em.get(i);
+            REBIRTH_EARN_MULTIPLIERS = arr;
+        }
+        java.util.List<Double> sm = cfg.getDoubleList("economy.rebirth.starting-money");
+        if (sm != null && sm.size() >= 8) {
+            REBIRTH_STARTING_MONEY_1 = sm.get(0); REBIRTH_STARTING_MONEY_2 = sm.get(1);
+            REBIRTH_STARTING_MONEY_3 = sm.get(2); REBIRTH_STARTING_MONEY_4 = sm.get(3);
+            REBIRTH_STARTING_MONEY_5 = sm.get(4); REBIRTH_STARTING_MONEY_6 = sm.get(5);
+            REBIRTH_STARTING_MONEY_7 = sm.get(6); REBIRTH_STARTING_MONEY_8 = sm.get(7);
+        }
+        java.util.List<Integer> ld = cfg.getIntegerList("economy.rebirth.lock-durations");
+        if (ld != null && ld.size() >= 8) {
+            REBIRTH_LOCK_DURATION_1 = ld.get(0); REBIRTH_LOCK_DURATION_2 = ld.get(1);
+            REBIRTH_LOCK_DURATION_3 = ld.get(2); REBIRTH_LOCK_DURATION_4 = ld.get(3);
+            REBIRTH_LOCK_DURATION_5 = ld.get(4); REBIRTH_LOCK_DURATION_6 = ld.get(5);
+            REBIRTH_LOCK_DURATION_7 = ld.get(6); REBIRTH_LOCK_DURATION_8 = ld.get(7);
+        }
+        for (Mutation m : Mutation.values()) {
+            if (m == Mutation.NONE) continue;
+            m.incomeMultiplier = cfg.getDouble("economy.mutations." + m.name() + ".income-multiplier", m.incomeMultiplier);
+        }
+        for (MobType mt : MobType.values()) {
+            mt.baseIncome = cfg.getDouble("economy.mobs." + mt.name() + ".base-income", mt.baseIncome);
+            mt.sellPrice = cfg.getInt("economy.mobs." + mt.name() + ".sell-price", mt.sellPrice);
+        }
+        getLogger().info("[Economy] Конфиг экономики загружен: мобов=" + MobType.values().length + ", мутаций=" + (Mutation.values().length - 1) + ".");
+    }
+
     private double getPlayerEarnMultiplier(Player player) {
         int rebirthCount = getRebirthCount(player);
-        if (rebirthCount >= 8) {
-            return 5.0;
-        } else if (rebirthCount >= 7) {
-            return 4.0;
-        } else if (rebirthCount >= 6) {
-            return 3.0;
-        } else if (rebirthCount >= 5) {
-            return 2.0;
-        } else if (rebirthCount >= 4) {
-            return 1.8;
-        } else if (rebirthCount >= 3) {
-            return 1.6;
-        } else if (rebirthCount >= 2) {
-            return 1.4;
-        } else if (rebirthCount >= 1) {
-            return 1.2;
+        if (rebirthCount >= 1) {
+            int idx = Math.min(rebirthCount, REBIRTH_EARN_MULTIPLIERS.length - 1);
+            return REBIRTH_EARN_MULTIPLIERS[idx];
         }
         return playerEarnMultipliers.getOrDefault(player.getUniqueId(), 1.0);
     }
     private void setPlayerEarnMultiplier(Player player) {
         int rebirthCount = getRebirthCount(player);
         double multiplier;
-        if (rebirthCount >= 8) {
-            multiplier = 5.0;
-        } else if (rebirthCount >= 7) {
-            multiplier = 4.0;
-        } else if (rebirthCount >= 6) {
-            multiplier = 3.0;
-        } else if (rebirthCount >= 5) {
-            multiplier = 2.0;
-        } else if (rebirthCount >= 4) {
-            multiplier = 1.8;
-        } else if (rebirthCount >= 3) {
-            multiplier = 1.6;
-        } else if (rebirthCount >= 2) {
-            multiplier = 1.4;
-        } else if (rebirthCount >= 1) {
-            multiplier = 1.2;
+        if (rebirthCount >= 1) {
+            int idx = Math.min(rebirthCount, REBIRTH_EARN_MULTIPLIERS.length - 1);
+            multiplier = REBIRTH_EARN_MULTIPLIERS[idx];
         } else {
             multiplier = 1.0;
         }
@@ -7654,6 +7706,9 @@ private boolean isBaseMob(Entity entity) {
             startingMoney = REBIRTH_STARTING_MONEY_4;
         } else if (currentRebirthCount >= 2) {
             startingMoney = REBIRTH_STARTING_MONEY_3;
+        } else if (currentRebirthCount >= 1) {
+            // __fix__ was missing: rebirth #2 silently fell through to MONEY_1 (worked only because both == 5000)
+            startingMoney = REBIRTH_STARTING_MONEY_2;
         } else {
             startingMoney = REBIRTH_STARTING_MONEY_1;
         }
@@ -8591,6 +8646,7 @@ public List<String> getMobPoints(String baseName) {
             World world = Bukkit.getWorld(worldName);
             if (world != null) {
                 getLogger().info("✓ Мир " + worldName + " уже загружен");
+                try { world.setGameRule(org.bukkit.GameRule.SEND_COMMAND_FEEDBACK, false); } catch (Throwable __t) {} // __fix__ silence cmd spam
                 continue;
             }
             File worldFolder = new File(Bukkit.getWorldContainer(), worldName);
@@ -8610,6 +8666,7 @@ public List<String> getMobPoints(String baseName) {
                 World loadedWorld = creator.createWorld();
                 if (loadedWorld != null) {
                     getLogger().info("✓ Мир " + worldName + " успешно загружен!");
+                    try { loadedWorld.setGameRule(org.bukkit.GameRule.SEND_COMMAND_FEEDBACK, false); } catch (Throwable __t) {} // __fix__ silence cmd spam
                 } else {
                     getLogger().severe("✗ Не удалось загрузить мир " + worldName);
                 }
