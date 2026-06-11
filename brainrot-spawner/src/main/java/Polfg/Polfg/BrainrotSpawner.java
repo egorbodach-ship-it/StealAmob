@@ -1847,11 +1847,11 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             m3.setAccessible(true);
             String col = (String) m3.invoke(plugin, baseName, cols);
             Method m4 = plugin.getClass().getDeclaredMethod(
-                    "spawnMobAtPoint", String.class, String.class, String.class, BrainrotBases.MobType.class);
+                    "spawnMobAtPoint", String.class, String.class, String.class, MobType.class);
             m4.setAccessible(true);
-            BrainrotBases.MobType type;
-            try { type = BrainrotBases.MobType.valueOf(data.name()); }
-            catch (Exception e) { type = BrainrotBases.MobType.CHICKEN; }
+            MobType type;
+            try { type = MobType.valueOf(data.name()); }
+            catch (Exception e) { type = MobType.CHICKEN; }
             m4.invoke(plugin, baseName, point, col, type);
             Mutation mutation = mobMutations.getOrDefault(mob, Mutation.NONE);
             boolean snowy = isSnowy(mob);
