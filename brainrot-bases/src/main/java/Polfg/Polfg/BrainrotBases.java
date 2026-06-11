@@ -255,7 +255,6 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             }
         }
         mobsConfig = YamlConfiguration.loadConfiguration(mobsFile);
-        instance = this;
         hologramManager = FancyHologramsPlugin.get().getHologramManager();
         ensureWorldsLoaded();
         registerRebirthCommand();
@@ -8476,8 +8475,6 @@ public List<String> getMobPoints(String baseName) {
         return df.format(amount);
     }
     // ==================== AUCTION BRIDGE (brainrot-auction integration) ====================
-    private static BrainrotBases instance;
-    public static BrainrotBases getInstance() { return instance; }
     private final Set<String> auctionListedPoints = ConcurrentHashMap.newKeySet();
     private final Map<String, Hologram> auctionHolograms = new ConcurrentHashMap<>();
     private AuctionHook auctionHook;
