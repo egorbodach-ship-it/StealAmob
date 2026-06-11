@@ -27,6 +27,7 @@
         <module>brainrot-stubs</module>
         <module>brainrot-admin</module>
         <module>brainrot-bases</module>
+        <module>brainrot-auction</module>
         <module>brainrot-codes</module>
         <module>brainrot-events</module>
         <module>brainrot-extras</module>

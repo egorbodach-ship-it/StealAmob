@@ -86,265 +86,6 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         });
     }
 
-    private enum KickReason {
-        REGION,
-        PARTICLE_WALL
-    }
-    private enum Rarity {
-        COMMON("§aОбычный"),
-        RARE("§9Редкий"),
-        EPIC("§5Эпический"),
-        LEGENDARY("§6§lЛегендарный"),
-        MYTHICAL("§d§l✦ Мифический ✦");
-        final String displayName;
-        Rarity(String displayName) {
-            this.displayName = displayName;
-        }
-        public String getDisplay() {
-            return displayName;
-        }
-    }
-    private enum Mutation {
-        NONE("", "", 1.0),
-        GOLD("Золотой", "§6", 1.25),
-        DIAMOND("Алмазный", "§b", 1.5),
-        RAINBOW("Радужный", "§f", 10.0),
-        SNOWY("Снежный", "§b", 5.0);
-        final String displayName;
-        final String format;
-        double incomeMultiplier;
-        Mutation(String displayName, String format, double incomeMultiplier) {
-            this.displayName = displayName;
-            this.format = format;
-            this.incomeMultiplier = incomeMultiplier;
-        }
-        static Mutation fromEntity(Entity entity) {
-            if (entity == null) return NONE;
-            Set<String> tags = entity.getScoreboardTags();
-            if (tags.contains("MUTATION_RAINBOW")) return RAINBOW;
-            if (tags.contains("MUTATION_DIAMOND")) return DIAMOND;
-            if (tags.contains("MUTATION_GOLD")) return GOLD;
-            return NONE;
-        }
-        static Mutation fromName(String name) {
-            if (name == null || name.isEmpty()) return NONE;
-            try {
-                return Mutation.valueOf(name.toUpperCase());
-            } catch (IllegalArgumentException e) {
-                return NONE;
-            }
-        }
-        static boolean isSnowy(Entity entity) {
-            return entity != null && entity.getScoreboardTags().contains("MUTATION_SNOWY");
-        }
-    }
-    public enum MobType {
-        CHICKEN("Курица", EntityType.CHICKEN, 3.0, Material.CHICKEN_SPAWN_EGG, 250, false, Rarity.COMMON),
-        COW("Корова", EntityType.COW, 5.0, Material.COW_SPAWN_EGG, 500, false, Rarity.COMMON),
-        SHEEP("Овца", EntityType.SHEEP, 7.0, Material.SHEEP_SPAWN_EGG, 750, false, Rarity.COMMON),
-        PIG("Свинья", EntityType.PIG, 9.0, Material.PIG_SPAWN_EGG, 1000, false, Rarity.COMMON),
-        RABBIT("Кролик", EntityType.RABBIT, 10.0, Material.RABBIT_SPAWN_EGG, 1200, false, Rarity.COMMON),
-        PARROT("Попугай", EntityType.PARROT, 13.0, Material.PARROT_SPAWN_EGG, 1500, false, Rarity.COMMON),
-        TURTLE("Черепаха", EntityType.TURTLE, 15.0, Material.TURTLE_SPAWN_EGG, 1800, false, Rarity.COMMON),
-        FOX("Лиса", EntityType.FOX, 15.0, Material.FOX_SPAWN_EGG, 2000, true, Rarity.RARE),
-        PANDA("Панда", EntityType.PANDA, 30.0, Material.PANDA_SPAWN_EGG, 4000, true, Rarity.RARE),
-        WOLF("Бульбульдог", EntityType.WOLF, 35.0, Material.WOLF_SPAWN_EGG, 4500, true, Rarity.RARE),
-        DOLPHIN("Дельфин", EntityType.DOLPHIN, 40.0, Material.DOLPHIN_SPAWN_EGG, 5000, true, Rarity.RARE),
-        HORSE("Лошадь", EntityType.HORSE, 50.0, Material.HORSE_SPAWN_EGG, 6500, true, Rarity.RARE),
-        LLAMA("Лама", EntityType.LLAMA, 55.0, Material.LLAMA_SPAWN_EGG, 7500, true, Rarity.RARE),
-        POLAR_BEAR("Белый медведь", EntityType.POLAR_BEAR, 65.0, Material.POLAR_BEAR_SPAWN_EGG, 9000, true, Rarity.RARE),
-        RAVAGER("Разоритель", EntityType.RAVAGER, 67.0, Material.RAVAGER_SPAWN_EGG, 9200, true, Rarity.RARE),
-        CAT_KUZYA("Кот Кузя", EntityType.CAT, 45.0, Material.CAT_SPAWN_EGG, 5500, true, Rarity.RARE),
-        ENDERMAN("Эндермен", EntityType.ENDERMAN, 75.0, Material.ENDERMAN_SPAWN_EGG, 10000, true, Rarity.EPIC),
-        BLAZE("Ифрит", EntityType.BLAZE, 90.0, Material.BLAZE_SPAWN_EGG, 12500, true, Rarity.EPIC),
-        WITHER_SKELETON("Визер-скелет", EntityType.WITHER_SKELETON, 100.0, Material.WITHER_SKELETON_SPAWN_EGG, 15000, true, Rarity.EPIC),
-        IRON_GOLEM("Железный голем", EntityType.IRON_GOLEM, 115.0, Material.IRON_BLOCK, 17500, true, Rarity.EPIC),
-        GUARDIAN("Страж", EntityType.GUARDIAN, 135.0, Material.GUARDIAN_SPAWN_EGG, 22500, true, Rarity.EPIC),
-        ENDERMITE("Эндермит", EntityType.ENDERMITE, 140.0, Material.ENDERMITE_SPAWN_EGG, 23500, true, Rarity.EPIC),
-        EVOKER("Заклинатель", EntityType.EVOKER, 150.0, Material.EVOKER_SPAWN_EGG, 25000, true, Rarity.EPIC),
-        VINDICATOR("Поборник", EntityType.VINDICATOR, 160.0, Material.VINDICATOR_SPAWN_EGG, 27500, true, Rarity.EPIC),
-        HUSK("Кадавр", EntityType.HUSK, 175.0, Material.HUSK_SPAWN_EGG, 30000, true, Rarity.EPIC),
-        STRAY("Зимогор", EntityType.STRAY, 225.0, Material.STRAY_SPAWN_EGG, 35000, true, Rarity.EPIC),
-        ELDER_GUARDIAN("Древний страж", EntityType.ELDER_GUARDIAN, 250.0, Material.ELDER_GUARDIAN_SPAWN_EGG, 37500, true, Rarity.EPIC),
-        MOOSHROOM("Грибная корова", EntityType.MOOSHROOM, 200.0, Material.RED_MUSHROOM_BLOCK, 35000, true, Rarity.LEGENDARY),
-        ZOMBIE_HORSE("Зомби-лошадь", EntityType.ZOMBIE_HORSE, 300.0, Material.ZOMBIE_HORSE_SPAWN_EGG, 50000, true, Rarity.LEGENDARY),
-        SKELETON_HORSE("Скелет-лошадь", EntityType.SKELETON_HORSE, 450.0, Material.SKELETON_HORSE_SPAWN_EGG, 75000, true, Rarity.LEGENDARY),
-        STRIDER("Страйдер", EntityType.STRIDER, 500.0, Material.STRIDER_SPAWN_EGG, 100000, true, Rarity.LEGENDARY),
-        PHANTOM("Фантом", EntityType.PHANTOM, 600.0, Material.PHANTOM_SPAWN_EGG, 150000, true, Rarity.LEGENDARY),
-        VEX("Векс", EntityType.VEX, 750.0, Material.VEX_SPAWN_EGG, 200000, true, Rarity.LEGENDARY),
-        MAGMA_CUBE("Магмовый куб", EntityType.MAGMA_CUBE, 1000.0, Material.MAGMA_CUBE_SPAWN_EGG, 250000, true, Rarity.LEGENDARY),
-        HOGLIN("Хоглин", EntityType.HOGLIN, 1000.0, Material.HOGLIN_SPAWN_EGG, 255000, true, Rarity.LEGENDARY),
-        PIGLIN_BRUTE("Пиглин-воин", EntityType.PIGLIN_BRUTE, 1100.0, Material.PIGLIN_BRUTE_SPAWN_EGG, 256000, true, Rarity.LEGENDARY),
-        PILLAGER("Разбойник", EntityType.PILLAGER, 1100.0, Material.PILLAGER_SPAWN_EGG, 275000, true, Rarity.LEGENDARY),
-        SILVERFISH("Чешуйница", EntityType.SILVERFISH, 1200.0, Material.SILVERFISH_SPAWN_EGG, 285000, true, Rarity.LEGENDARY),
-        WITCH("Ведьма", EntityType.WITCH, 1200.0, Material.WITCH_SPAWN_EGG, 300000, true, Rarity.LEGENDARY),
-        CAVE_SPIDER("Пещерный паук", EntityType.CAVE_SPIDER, 1200.0, Material.CAVE_SPIDER_SPAWN_EGG, 310000, true, Rarity.LEGENDARY),
-        SPIDER("Паук", EntityType.SPIDER, 1200.0, Material.SPIDER_SPAWN_EGG, 315000, true, Rarity.LEGENDARY),
-        ILLUSIONER("Иллюзионист", EntityType.ILLUSIONER, 1300.0, Material.SPECTRAL_ARROW, 320000, true, Rarity.LEGENDARY),
-        OCELOT("Оцелот", EntityType.OCELOT, 1300.0, Material.OCELOT_SPAWN_EGG, 325000, true, Rarity.LEGENDARY),
-        BAT("Летучая мышь", EntityType.BAT, 1800.0, Material.BAT_SPAWN_EGG, 325000, true, Rarity.LEGENDARY),
-        BEE("Пчела", EntityType.BEE, 1400.0, Material.BEE_SPAWN_EGG, 345000, true, Rarity.LEGENDARY),
-        CAMEL("Верблюд", EntityType.CAMEL, 1200.0, Material.CAMEL_SPAWN_EGG, 300000, true, Rarity.MYTHICAL),
-        BROWN_PANDA("Коричневая панда", EntityType.PANDA, 1700.0, Material.PANDA_SPAWN_EGG, 400000, true, Rarity.MYTHICAL),
-        CREEPER("Крипер", EntityType.CREEPER, 2100.0, Material.CREEPER_SPAWN_EGG, 450000, true, Rarity.MYTHICAL),
-        DROWNED("Утопленник", EntityType.DROWNED, 2500.0, Material.DROWNED_SPAWN_EGG, 500000, true, Rarity.MYTHICAL),
-        FROG("Лягушка", EntityType.FROG, 3000.0, Material.FROG_SPAWN_EGG, 600000, true, Rarity.MYTHICAL),
-        SPONGE("Лаки-Блок", EntityType.ITEM_DISPLAY, 0.0, Material.SPONGE, 750000, true, Rarity.MYTHICAL),
-        GOAT("Козёл", EntityType.GOAT, 5000.0, Material.GOAT_SPAWN_EGG, 1000000, true, Rarity.MYTHICAL),
-        GLOW_SQUID("Светящийся кальмар", EntityType.GLOW_SQUID, 6000.0, Material.GLOW_SQUID_SPAWN_EGG, 1000000, true, Rarity.MYTHICAL),
-        WANDERING_TRADER("Странствующий торговец", EntityType.WANDERING_TRADER, 7500.0, Material.WANDERING_TRADER_SPAWN_EGG, 1200000, true, Rarity.MYTHICAL),
-        SNOW_GOLEM("Снеговик", EntityType.SNOW_GOLEM, 7500.0, Material.CARVED_PUMPKIN, 1500000, true, Rarity.MYTHICAL),
-        PIGLIN("Пиглин", EntityType.PIGLIN, 8000.0, Material.PIGLIN_SPAWN_EGG, 1800000, true, Rarity.MYTHICAL),
-        MYTHIC_SKELETON_HORSE("Скелет-лошадь", EntityType.SKELETON_HORSE, 8500.0, Material.SKELETON_HORSE_SPAWN_EGG, 2000000, true, Rarity.MYTHICAL),
-        ZOMBIFIED_PIGLIN("Зомби-пиглин", EntityType.ZOMBIFIED_PIGLIN, 9000.0, Material.ZOMBIFIED_PIGLIN_SPAWN_EGG, 2200000, true, Rarity.MYTHICAL),
-        ALLAY("Аллей", EntityType.ALLAY, 9500.0, Material.ALLAY_SPAWN_EGG, 2500000, true, Rarity.MYTHICAL),
-        SNIFFER("Сниффер", EntityType.SNIFFER, 10000.0, Material.SNIFFER_EGG, 2800000, true, Rarity.MYTHICAL),
-        ZOGLIN("Зоглин", EntityType.ZOGLIN, 11000.0, Material.ZOGLIN_SPAWN_EGG, 3000000, true, Rarity.MYTHICAL),
-        AXOLOTL("Аксолотль", EntityType.AXOLOTL, 12000.0, Material.AXOLOTL_SPAWN_EGG, 3500000, true, Rarity.MYTHICAL),
-        WARDEN("Варден", EntityType.WARDEN, 15000.0, Material.SCULK_SHRIEKER, 5000000, true, Rarity.MYTHICAL),
-        ROT_WALKER("Гнилоход", EntityType.ITEM_DISPLAY, 50000.0, Material.SLIME_BALL, 9999999, true, Rarity.MYTHICAL);
-        public final String name;
-        public final EntityType type;
-        public double baseIncome;
-        public final Material icon;
-        public int sellPrice;
-        public final boolean isRare;
-        public final Rarity rarity;
-        MobType(String name, EntityType type, double baseIncome, Material icon, int sellPrice, boolean isRare, Rarity rarity) {
-            this.name = name;
-            this.type = type;
-            this.baseIncome = baseIncome;
-            this.icon = icon;
-            this.sellPrice = sellPrice;
-            this.isRare = isRare;
-            this.rarity = rarity;
-        }
-        public String getRarityDisplay() {
-            return rarity.getDisplay();
-        }
-        public boolean isEpic() {
-            return rarity == Rarity.EPIC;
-        }
-        public boolean isLegendary() {
-            return rarity == Rarity.LEGENDARY;
-        }
-        public boolean isMythical() {
-            return rarity == Rarity.MYTHICAL;
-        }
-        public boolean isLuckyBlock() {
-            return this == SPONGE;
-        }
-        public boolean isRotWalker() {
-            return this == ROT_WALKER;
-        }
-        public boolean isAJMob() {
-            return this == SPONGE || this == ROT_WALKER;
-        }
-        static MobType fromEntity(Entity entity) {
-            if (entity == null) return CHICKEN;
-            for (MobType mt : values()) {
-                if (entity.getScoreboardTags().contains("MOB_" + mt.name())) {
-                    return mt;
-                }
-            }
-            if (entity.getScoreboardTags().contains("LUCKY_BLOCK") ||
-                entity.getScoreboardTags().contains("aj.luckyblock.root")) {
-                return SPONGE;
-            }
-            if (entity.getScoreboardTags().contains("ROT_WALKER_BASE") ||
-                entity.getScoreboardTags().contains("aj.rotwalker.root")) {
-                return ROT_WALKER;
-            }
-            if (entity.getScoreboardTags().contains("MOB_RARITY_MYTHICAL")) {
-                for (MobType mt : values()) {
-                    if (mt.isMythical() && entity.getType() == mt.type) {
-                        return mt;
-                    }
-                }
-            }
-            for (MobType mt : values()) {
-                if (entity.getType() == mt.type) {
-                    if (mt == CAT_KUZYA && entity instanceof Cat cat) {
-                        if (cat.getCatType() == Cat.Type.RED) {
-                            return mt;
-                        }
-                        continue;
-                    }
-                    if (mt == BROWN_PANDA && entity instanceof Panda panda) {
-                        if (panda.getMainGene() == Panda.Gene.BROWN) {
-                            return mt;
-                        }
-                        continue;
-                    }
-                    if (mt == PANDA && entity instanceof Panda panda) {
-                        if (panda.getMainGene() != Panda.Gene.BROWN) {
-                            return mt;
-                        }
-                        continue;
-                    }
-                    if (mt == FOX && entity instanceof Fox fox) {
-                        if (fox.getFoxType() == Fox.Type.RED) {
-                            return mt;
-                        }
-                        continue;
-                    }
-                    if (mt == MOOSHROOM && entity instanceof MushroomCow) {
-                        if (entity.getScoreboardTags().contains("LEGENDARY_MOB") ||
-                            entity.getScoreboardTags().contains("MOB_RARITY_LEGENDARY")) {
-                            return mt;
-                        }
-                        continue;
-                    }
-                    if (mt == MYTHIC_SKELETON_HORSE && entity.getType() == EntityType.SKELETON_HORSE) {
-                        if (entity.getScoreboardTags().contains("MOB_RARITY_MYTHICAL")) {
-                            return mt;
-                        }
-                        continue;
-                    }
-                    if (mt == SKELETON_HORSE && entity.getType() == EntityType.SKELETON_HORSE) {
-                        if (!entity.getScoreboardTags().contains("MOB_RARITY_MYTHICAL")) {
-                            return mt;
-                        }
-                        continue;
-                    }
-                    if (mt == WARDEN && entity.getType() == EntityType.WARDEN) {
-                        return mt;
-                    }
-                    return mt;
-                }
-            }
-            return CHICKEN;
-        }
-        static MobType fromTag(Entity entity) {
-            if (entity == null) return CHICKEN;
-            for (MobType mt : values()) {
-                if (entity.getScoreboardTags().contains("MOB_" + mt.name())) return mt;
-            }
-            return CHICKEN;
-        }
-        static MobType fromName(String name) {
-            if (name == null || name.isEmpty()) return CHICKEN;
-            for (MobType mt : values()) {
-                if (mt.name.equalsIgnoreCase(name) ||
-                    mt.name().equalsIgnoreCase(name)) {
-                    return mt;
-                }
-            }
-            return CHICKEN;
-        }
-        public Material getCorrectIcon() {
-            if (this == MOOSHROOM) {
-                return Material.RED_MUSHROOM_BLOCK;
-            }
-            if (this == SPONGE) {
-                return Material.SPONGE;
-            }
-            if (this == ROT_WALKER) {
-                return Material.SLIME_BALL;
-            }
-            return icon;
-        }
-    }
     private final Map<String, String> bases = new HashMap<>();
     private final Map<String, Hologram> holograms = new HashMap<>();
     private final Map<String, List<String>> baseSubmitPoints = new HashMap<>();
@@ -492,37 +233,6 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             this.snowy = false;
         }
     }
-    static class SavedMobData {
-        final String base;
-        final String mobPoint;
-        final String collectorPoint;
-        final MobType mobType;
-        final long luckyBlockRemainingMs;
-        final boolean luckyBlockReady;
-        final String mutation;
-        final boolean snowy;
-        SavedMobData(String base, String mobPoint, String collectorPoint, MobType mobType) {
-            this(base, mobPoint, collectorPoint, mobType, -1L, false, "NONE", false);
-        }
-        SavedMobData(String base, String mobPoint, String collectorPoint, MobType mobType, long luckyBlockRemainingMs) {
-            this(base, mobPoint, collectorPoint, mobType, luckyBlockRemainingMs, false, "NONE", false);
-        }
-        SavedMobData(String base, String mobPoint, String collectorPoint, MobType mobType, long luckyBlockRemainingMs, boolean luckyBlockReady) {
-            this(base, mobPoint, collectorPoint, mobType, luckyBlockRemainingMs, luckyBlockReady, "NONE", false);
-        }
-        SavedMobData(String base, String mobPoint, String collectorPoint, MobType mobType,
-                     long luckyBlockRemainingMs, boolean luckyBlockReady,
-                     String mutation, boolean snowy) {
-            this.base = base;
-            this.mobPoint = mobPoint;
-            this.collectorPoint = collectorPoint;
-            this.mobType = mobType;
-            this.luckyBlockRemainingMs = luckyBlockRemainingMs;
-            this.luckyBlockReady = luckyBlockReady;
-            this.mutation = (mutation != null) ? mutation : "NONE";
-            this.snowy = snowy;
-        }
-    }
     private boolean debug = false;
 
     /** Пишет отладочный лог только при settings.debug=true. */
@@ -545,6 +255,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             }
         }
         mobsConfig = YamlConfiguration.loadConfiguration(mobsFile);
+        instance = this;
         hologramManager = FancyHologramsPlugin.get().getHologramManager();
         ensureWorldsLoaded();
         registerRebirthCommand();
@@ -1714,6 +1425,10 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                             baseIncome *= mutationMultiplier;
                             String base = findBaseByCollectorId(collectorId);
                             if (base == null) continue;
+                            if (isAuctionListed(base, mobPoint)) {
+                                collectorLastUpdate.put(collectorId, lastUpdate + (secondsPassed * 1000));
+                                continue;
+                            }
                             // __fix__ earn-multiplier is applied once at collection time (handleMoneyCollection).
                             // Applying it here too caused double-multiplication (e.g. rebirth x5 became x25).
                             double income = baseIncome * secondsPassed;
@@ -2549,6 +2264,12 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         data.mutation = baseMobMutations.getOrDefault(mob, Mutation.NONE);
         data.snowy = baseMobSnowy.getOrDefault(mob, false);
         stealingPlayers.put(player, data);
+        {
+            String __apoint = entityToPointMap.get(mob);
+            if (__apoint != null && isAuctionListed(originalBase, __apoint)) {
+                auctionNotifyRemoved(originalBase, __apoint);
+            }
+        }
         startStealProgressTask(player, data);
         data.stealTimer = new BukkitRunnable() {
             @Override
@@ -8754,6 +8475,191 @@ public List<String> getMobPoints(String baseName) {
         DecimalFormat df = new DecimalFormat("#,##0");
         return df.format(amount);
     }
+    // ==================== AUCTION BRIDGE (brainrot-auction integration) ====================
+    private static BrainrotBases instance;
+    public static BrainrotBases getInstance() { return instance; }
+    private final Set<String> auctionListedPoints = ConcurrentHashMap.newKeySet();
+    private final Map<String, Hologram> auctionHolograms = new ConcurrentHashMap<>();
+    private AuctionHook auctionHook;
+
+    private static String auctionKey(String base, String mobPoint) {
+        return base + "\u0000" + mobPoint;
+    }
+
+    public void setAuctionHook(AuctionHook hook) { this.auctionHook = hook; }
+
+    public boolean isAuctionListed(String base, String mobPoint) {
+        return base != null && mobPoint != null && auctionListedPoints.contains(auctionKey(base, mobPoint));
+    }
+
+    private String auctionFindBaseForMobPoint(String mobPoint) {
+        if (mobPoint == null) return null;
+        for (Map.Entry<String, Set<String>> e : occupiedMobPoints.entrySet()) {
+            if (e.getValue() != null && e.getValue().contains(mobPoint)) return e.getKey();
+        }
+        for (Map.Entry<String, List<String>> e : baseMobSpawnPoints.entrySet()) {
+            if (e.getValue() != null && e.getValue().contains(mobPoint)) return e.getKey();
+        }
+        return null;
+    }
+
+    private Entity auctionFindMobEntity(String mobPoint) {
+        if (mobPoint == null) return null;
+        for (Map.Entry<Entity, String> e : entityToPointMap.entrySet()) {
+            if (mobPoint.equals(e.getValue())) {
+                Entity en = e.getKey();
+                if (en != null && !en.isDead()) return en;
+            }
+        }
+        return null;
+    }
+
+    public String getPlayerBase(String ownerName) {
+        if (ownerName == null) return null;
+        for (Map.Entry<String, String> e : bases.entrySet()) {
+            String owner = e.getValue();
+            if (owner != null && owner.equalsIgnoreCase(ownerName)) return e.getKey();
+        }
+        return null;
+    }
+
+    public boolean hasFreeSlot(String ownerName) {
+        String base = getPlayerBase(ownerName);
+        if (base == null) return false;
+        return findFreeMobPoint(base) != null;
+    }
+
+    public AuctionMobInfo getListableMobInfo(Player player, Entity mob) {
+        if (player == null || mob == null) return null;
+        String mobPoint = entityToPointMap.get(mob);
+        if (mobPoint == null) return null;
+        String base = auctionFindBaseForMobPoint(mobPoint);
+        if (base == null) return null;
+        String owner = bases.get(base);
+        if (owner == null || !owner.equalsIgnoreCase(player.getName())) return null;
+        MobType type = MobType.fromEntity(mob);
+        if (type == null || type.isLuckyBlock() || type.isRotWalker()) return null;
+        if (isAuctionListed(base, mobPoint)) return null;
+        Mutation mut = baseMobMutations.getOrDefault(mob, Mutation.NONE);
+        boolean snowy = baseMobSnowy.getOrDefault(mob, false);
+        double income = type.baseIncome * getMobMutationMultiplier(mob);
+        AuctionMobInfo info = new AuctionMobInfo();
+        info.base = base;
+        info.mobPoint = mobPoint;
+        info.mobType = type.name();
+        info.displayName = type.name;
+        info.mutationName = mut.name();
+        info.snowy = snowy;
+        info.baseIncomePerSec = income;
+        info.iconMaterial = type.getCorrectIcon().name();
+        info.rarityOrder = type.rarity == null ? 0 : type.rarity.ordinal();
+        info.sellerName = owner;
+        return info;
+    }
+
+    public boolean listMobForAuction(String base, String mobPoint) {
+        if (base == null || mobPoint == null) return false;
+        auctionListedPoints.add(auctionKey(base, mobPoint));
+        createAuctionHologram(base, mobPoint);
+        return true;
+    }
+
+    public void unlistMobFromAuction(String base, String mobPoint) {
+        if (base == null || mobPoint == null) return;
+        auctionListedPoints.remove(auctionKey(base, mobPoint));
+        removeAuctionHologram(base, mobPoint);
+    }
+
+    private void createAuctionHologram(String base, String mobPoint) {
+        if (hologramManager == null) return;
+        try {
+            Entity mob = auctionFindMobEntity(mobPoint);
+            if (mob == null) return;
+            removeAuctionHologram(base, mobPoint);
+            Location loc = mob.getLocation().clone().add(0, 2.4, 0);
+            String name = "auction_" + base + "_" + mobPoint;
+            TextHologramData data = new TextHologramData(name, loc);
+            List<String> lines = new ArrayList<>();
+            lines.add(color("§c§lВЫСТАВЛЕН НА АУКЦИОН"));
+            data.setText(lines);
+            data.setBackground(Hologram.TRANSPARENT);
+            data.setSeeThrough(true);
+            data.setBillboard(org.bukkit.entity.Display.Billboard.CENTER);
+            Hologram holo = hologramManager.create(data);
+            hologramManager.addHologram(holo);
+            auctionHolograms.put(auctionKey(base, mobPoint), holo);
+        } catch (Exception e) {
+            getLogger().warning("Auction hologram error: " + e.getMessage());
+        }
+    }
+
+    private void removeAuctionHologram(String base, String mobPoint) {
+        Hologram holo = auctionHolograms.remove(auctionKey(base, mobPoint));
+        if (holo != null && hologramManager != null) {
+            try { hologramManager.removeHologram(holo); } catch (Exception ignored) {}
+        }
+    }
+
+    private void auctionNotifyRemoved(String base, String mobPoint) {
+        if (!isAuctionListed(base, mobPoint)) return;
+        unlistMobFromAuction(base, mobPoint);
+        if (auctionHook != null) {
+            try { auctionHook.onListedMobRemoved(base, mobPoint); } catch (Exception ignored) {}
+        }
+    }
+
+    public boolean removeListedMobForSale(String base, String mobPoint) {
+        if (base == null || mobPoint == null) return false;
+        unlistMobFromAuction(base, mobPoint);
+        removeMobAtPoint(mobPoint);
+        String owner = bases.get(base);
+        if (owner != null && !owner.equals("none")) {
+            savePlayerMobsInstantly(owner);
+        }
+        return true;
+    }
+
+    public boolean giveAuctionMob(String ownerName, String mobTypeName, String mutationName, boolean snowy) {
+        final String base = getPlayerBase(ownerName);
+        if (base == null) return false;
+        final String freePoint = findFreeMobPoint(base);
+        if (freePoint == null) return false;
+        MobType type = MobType.fromName(mobTypeName);
+        if (type == null) return false;
+        List<String> colPoints = baseCollectorPoints.get(base);
+        String freeCol = findFreeCollectorForBase(base, colPoints);
+        spawnMobAtPoint(base, freePoint, freeCol, type);
+        final String fMut = mutationName;
+        final boolean fSnowy = snowy;
+        if ((mutationName != null && !mutationName.isEmpty() && !mutationName.equalsIgnoreCase("NONE")) || snowy) {
+            Bukkit.getScheduler().runTaskLater(this, () -> applyMutationToPoint(base, freePoint, fMut, fSnowy), 5L);
+        }
+        Bukkit.getScheduler().runTaskLater(this, () -> savePlayerMobsInstantly(ownerName), 10L);
+        return true;
+    }
+
+    public double auctionGetBalance(OfflinePlayer p) {
+        if (economy == null || p == null) return 0.0;
+        try { return economy.getBalance(p); } catch (Exception e) { return 0.0; }
+    }
+
+    public boolean auctionWithdraw(OfflinePlayer p, double amount) {
+        if (economy == null || p == null) return false;
+        try {
+            if (economy.getBalance(p) < amount) return false;
+            return economy.withdrawPlayer(p, amount).transactionSuccess();
+        } catch (Exception e) { return false; }
+    }
+
+    public boolean auctionDeposit(OfflinePlayer p, double amount) {
+        if (economy == null || p == null) return false;
+        try { return economy.depositPlayer(p, amount).transactionSuccess(); } catch (Exception e) { return false; }
+    }
+
+    public double auctionGetEarnMultiplier(Player player) {
+        try { return getPlayerEarnMultiplier(player); } catch (Exception e) { return 1.0; }
+    }
+
     private String color(String s) {
         if (s == null) return "";
         return ChatColor.translateAlternateColorCodes('&', s);

@@ -1,0 +1,16 @@
+name: BrainrotAuction
+version: '${project.version}'
+main: Polfg.Polfg.auction.BrainrotAuction
+api-version: '1.20'
+author: Polfg
+depend: [BrainrotBases]
+softdepend: [Vault]
+commands:
+  ah:
+    description: Mob auction house
+    usage: /ah | /ah sell <price> | /ah search <mob>
+    aliases: [auction, brainrotauction]
+permissions:
+  brainrotauction.use:
+    description: Use the mob auction house
+    default: true
