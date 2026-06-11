@@ -80,16 +80,30 @@ public class BrainrotAuction extends JavaPlugin implements CommandExecutor, TabC
                 p.sendMessage("\u00a7c\u041d\u0435\u0432\u0435\u0440\u043d\u0430\u044f \u0446\u0435\u043d\u0430. \u041f\u0440\u0438\u043c\u0435\u0440\u044b: \u00a7f100000, 100k, 1.5m, 100b");
                 return true;
             }
-            Entity target = p.getTargetEntity(6);
-            if (target == null) {
-                p.sendMessage("\u00a7c\u041f\u043e\u0441\u043c\u043e\u0442\u0440\u0438\u0442\u0435 \u043d\u0430 \u043c\u043e\u0431\u0430 \u043d\u0430 \u0441\u0432\u043e\u0435\u0439 \u0431\u0430\u0437\u0435, \u043a\u043e\u0442\u043e\u0440\u043e\u0433\u043e \u0445\u043e\u0442\u0438\u0442\u0435 \u043f\u0440\u043e\u0434\u0430\u0442\u044c.");
-                return true;
-            }
-            AuctionMobInfo info = AuctionBridge.getListableMobInfo(p, target);
+            // Robust mob detection: ray-trace first, then nearest owned base mob in look direction.
+            AuctionMobInfo info = null;
+            Entity looked = p.getTargetEntity(6);
+            if (looked != null) info = AuctionBridge.getListableMobInfo(p, looked);
             if (info == null) {
-                p.sendMessage("\u00a7c\u042d\u0442\u043e\u0433\u043e \u043c\u043e\u0431\u0430 \u043d\u0435\u043b\u044c\u0437\u044f \u0432\u044b\u0441\u0442\u0430\u0432\u0438\u0442\u044c (\u043d\u0435 \u0432\u0430\u0448 \u043c\u043e\u0431 \u0431\u0430\u0437\u044b, \u043b\u0430\u043a\u0438-\u0431\u043b\u043e\u043a/\u0433\u043d\u0438\u043b\u043e\u0445\u043e\u0434, \u0438\u043b\u0438 \u0443\u0436\u0435 \u043d\u0430 \u0430\u0443\u043a\u0446\u0438\u043e\u043d\u0435).");
+                org.bukkit.util.Vector dir = p.getEyeLocation().getDirection();
+                org.bukkit.util.Vector eye = p.getEyeLocation().toVector();
+                double bestDot = 0.55;
+                for (Entity e : p.getNearbyEntities(6, 6, 6)) {
+                    if (!(e instanceof org.bukkit.entity.LivingEntity)) continue;
+                    org.bukkit.util.Vector to = e.getLocation().add(0, e.getHeight() / 2.0, 0).toVector().subtract(eye);
+                    double dist = to.length();
+                    if (dist < 0.1 || dist > 6.5) continue;
+                    double dot = to.clone().normalize().dot(dir);
+                    if (dot <= bestDot) continue;
+                    AuctionMobInfo cand = AuctionBridge.getListableMobInfo(p, e);
+                    if (cand != null) { info = cand; bestDot = dot; }
+                }
+            }
+            if (info == null) {
+                p.sendMessage("§cПодойдите ближе и смотрите на своего моба на базе (не лаки-блок/гнилоход, не уже на аукционе).");
                 return true;
             }
+
             AuctionListing l = new AuctionListing(UUID.randomUUID().toString());
             l.sellerUuid = p.getUniqueId().toString();
             l.sellerName = p.getName();
