@@ -6251,6 +6251,9 @@ private boolean isBaseMob(Entity entity) {
             lines.add(color(incomeText));
             lines.add(color("§6" + formatNumber(type.sellPrice) + "$"));
         }
+        if (isMobAuctionListed(mob)) {
+            lines.add(0, color("§c§lВЫСТАВЛЕН НА АУКЦИОН"));
+        }
         data.setText(lines);
         data.setScale(new Vector3f(scale, scale, scale));
         data.setBackground(Hologram.TRANSPARENT);
@@ -6291,7 +6294,8 @@ private boolean isBaseMob(Entity entity) {
                 if (!(holo.getData() instanceof TextHologramData textData)) return;
                 List<String> lines = new ArrayList<>(textData.getText());
                 int offset = tick % 7;
-                int rainbowLineIndex = snowy ? 1 : 0;
+                int auctionOffset = (!lines.isEmpty() && ChatColor.stripColor(lines.get(0)).contains("АУКЦИОН")) ? 1 : 0;
+                int rainbowLineIndex = auctionOffset + (snowy ? 1 : 0);
                 if (rainbowLineIndex < lines.size()) {
                     lines.set(rainbowLineIndex, color(getRainbowText("Радужный", offset)));
                 }
@@ -6599,15 +6603,26 @@ private boolean isBaseMob(Entity entity) {
                 }
             }
         }
-        if (!foundMob && !passengers.isEmpty()) {
-            player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 1f, 0.5f);
-            sendCooldownMessage(player, "§c❌ Не удалось определить тип моба!", lastCollectMessage);
+        if (!foundMob) {
+            boolean hasRealMobPassenger = false;
             for (Entity passenger : passengers) {
-                getLogger().info("Пассажир: " + passenger.getType() +
-                               ", теги: " + passenger.getScoreboardTags() +
-                               ", имя: " + passenger.getCustomName());
+                if (passenger == null || passenger.isDead() || !passenger.isValid()) continue;
+                if (passenger instanceof ArmorStand) continue;
+                if (!(passenger instanceof LivingEntity)) continue;
+                if (passenger.getScoreboardTags().contains(BASE_MOB_TAG)) continue;
+                if (passenger.getScoreboardTags().contains("LUCKY_BLOCK_CARRY_DISPLAY")) continue;
+                hasRealMobPassenger = true;
+                break;
             }
-        } else if (!foundMob) {
+            if (hasRealMobPassenger) {
+                player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 1f, 0.5f);
+                sendCooldownMessage(player, "§c❌ Не удалось определить тип моба!", lastCollectMessage);
+                for (Entity passenger : passengers) {
+                    getLogger().info("Пассажир: " + passenger.getType() +
+                                   ", теги: " + passenger.getScoreboardTags() +
+                                   ", имя: " + passenger.getCustomName());
+                }
+            }
         }
     }
     private MobType determineMobType(Entity entity) {
@@ -8511,6 +8526,24 @@ public List<String> getMobPoints(String baseName) {
         return null;
     }
 
+    private void refreshMobHologramForPoint(String base, String mobPoint) {
+        if (hologramManager == null) return;
+        Entity mob = auctionFindMobEntity(mobPoint);
+        if (mob == null) return;
+        MobType type = MobType.fromEntity(mob);
+        if (type == null) return;
+        createMobHologram(mob, type);
+    }
+
+    private boolean isMobAuctionListed(Entity mob) {
+        if (mob == null) return false;
+        String mobPoint = entityToPointMap.get(mob);
+        if (mobPoint == null) return false;
+        String base = auctionFindBaseForMobPoint(mobPoint);
+        if (base == null) return false;
+        return isAuctionListed(base, mobPoint);
+    }
+
     public String getPlayerBase(String ownerName) {
         if (ownerName == null) return null;
         for (Map.Entry<String, String> e : bases.entrySet()) {
@@ -8557,14 +8590,14 @@ public List<String> getMobPoints(String baseName) {
     public boolean listMobForAuction(String base, String mobPoint) {
         if (base == null || mobPoint == null) return false;
         auctionListedPoints.add(auctionKey(base, mobPoint));
-        createAuctionHologram(base, mobPoint);
+        refreshMobHologramForPoint(base, mobPoint);
         return true;
     }
 
     public void unlistMobFromAuction(String base, String mobPoint) {
         if (base == null || mobPoint == null) return;
         auctionListedPoints.remove(auctionKey(base, mobPoint));
-        removeAuctionHologram(base, mobPoint);
+        refreshMobHologramForPoint(base, mobPoint);
     }
 
     private void createAuctionHologram(String base, String mobPoint) {
