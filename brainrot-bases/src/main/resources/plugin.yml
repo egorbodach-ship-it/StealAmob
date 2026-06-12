@@ -4,7 +4,7 @@ main: Polfg.Polfg.BrainrotBases
 api-version: '1.20'
 author: Polfg
 depend: [Vault]
-softdepend: [PlaceholderAPI, FancyHolograms, WorldGuard, WorldEdit]
+softdepend: [PlaceholderAPI, FancyHolograms, WorldGuard, WorldEdit, FastAsyncWorldEdit]
 commands:
   resetrebirth:
     description: Reset a player's rebirth

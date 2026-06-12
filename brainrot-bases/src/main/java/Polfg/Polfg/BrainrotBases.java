@@ -1,5 +1,15 @@
 package Polfg.Polfg;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
+import com.sk89q.worldedit.WorldEdit;
+import com.sk89q.worldedit.EditSession;
+import com.sk89q.worldedit.extent.clipboard.Clipboard;
+import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormat;
+import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormats;
+import com.sk89q.worldedit.extent.clipboard.io.ClipboardReader;
+import com.sk89q.worldedit.function.operation.Operation;
+import com.sk89q.worldedit.function.operation.Operations;
+import com.sk89q.worldedit.math.BlockVector3;
+import com.sk89q.worldedit.session.ClipboardHolder;
 import com.sk89q.worldguard.WorldGuard;
 import com.sk89q.worldguard.protection.managers.RegionManager;
 import com.sk89q.worldguard.protection.regions.ProtectedRegion;
@@ -141,6 +151,20 @@ public class BrainrotBases extends JavaPlugin implements Listener {
     private final Map<UUID, Double> playerEarnMultipliers = new ConcurrentHashMap<>();
     private final Set<String> animatingPoints = ConcurrentHashMap.newKeySet();
     private final Map<String, String> baseParticlePoints = new HashMap<>();
+    private final Map<String, Stage2Config> stage2Configs = new HashMap<>();
+    private final Map<String, Boolean> stage2Active = new ConcurrentHashMap<>();
+    private static class Stage2Config {
+        boolean enabled;
+        String world;
+        String schematic;
+        String emptySchematic;
+        String pos1;
+        String pos2;
+        String mobPoint;
+        String collectorPoint;
+        String laserPoint;
+        int requiredRebirths = 2;
+    }
  private final Map<Entity, Entity> luckyBlockHitboxMap = new ConcurrentHashMap<>();
  private final Map<Entity, String> luckyBlockTags = new ConcurrentHashMap<>();
  private final Map<Entity, BukkitRunnable> luckyBlockAnimations = new ConcurrentHashMap<>();
@@ -1345,6 +1369,22 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                     }
                 }
             }
+            for (Map.Entry<String, Boolean> st2e : new HashMap<>(stage2Active).entrySet()) {
+                if (!Boolean.TRUE.equals(st2e.getValue())) continue;
+                String st2base = st2e.getKey();
+                Stage2Config sc = stage2Configs.get(st2base);
+                if (sc == null || sc.laserPoint == null || sc.laserPoint.isEmpty()) continue;
+                String st2owner = bases.get(st2base);
+                if (st2owner == null || st2owner.equals("none")) continue;
+                Location laserLoc = getLocationFromPoint(sc.laserPoint);
+                if (laserLoc == null || laserLoc.getWorld() == null) continue;
+                for (Player player : laserLoc.getWorld().getPlayers()) {
+                    if (player.getName().equals(st2owner)) continue;
+                    if (isPlayerNearParticleWall(player, sc.laserPoint)) {
+                        executeKick(player, st2base, currentTime, KickReason.PARTICLE_WALL);
+                    }
+                }
+            }
         }, 0L, 5L);
     }
     private void startStealingCheckTimer() {
@@ -1536,6 +1576,31 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                                 }
                             }
                         }
+                    }
+                }
+                for (Map.Entry<String, Boolean> st2e : new HashMap<>(stage2Active).entrySet()) {
+                    if (!Boolean.TRUE.equals(st2e.getValue())) continue;
+                    Stage2Config sc = stage2Configs.get(st2e.getKey());
+                    if (sc == null || sc.laserPoint == null) continue;
+                    String[] s = sc.laserPoint.split("_");
+                    if (s.length != 4) continue;
+                    try {
+                        World world = Bukkit.getWorld(s[0]);
+                        if (world == null) continue;
+                        double startX = Integer.parseInt(s[1]) + 0.5;
+                        double startY = Integer.parseInt(s[2]);
+                        double startZ = Integer.parseInt(s[3]) + 0.5;
+                        int rowLength = 15;
+                        double height = 6;
+                        for (int i = 0; i <= rowLength; i++) {
+                            double currentX = startX + i;
+                            double currentZ = startZ;
+                            for (double y = startY; y <= startY + height; y += 0.5) {
+                                world.spawnParticle(Particle.DUST, currentX, y, currentZ, 1,
+                                    new Particle.DustOptions(org.bukkit.Color.RED, 1.0f));
+                            }
+                        }
+                    } catch (NumberFormatException e) {
                     }
                 }
             }
@@ -1959,6 +2024,11 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         MobType type = MobType.fromEntity(entity);
         if (type == null) return;
         String mobPoint = entityToPointMap.get(entity);
+        if (isMobAuctionListed(entity)) {
+            player.sendMessage(color("&c❌ Этот моб выставлен на аукцион! Сначала снимите его с аукциона, чтобы продать."));
+            player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1f, 1f);
+            return;
+        }
         String playerName = player.getName();
         if (savedPlayerMobs.containsKey(playerName)) {
             List<SavedMobData> mobs = savedPlayerMobs.get(playerName);
@@ -4326,6 +4396,107 @@ private boolean isBaseMob(Entity entity) {
             }
         }
     }
+    private void loadStage2(String base) {
+        Stage2Config sc = stage2Configs.get(base);
+        if (sc == null || !sc.enabled) return;
+        if (Boolean.TRUE.equals(stage2Active.get(base))) return;
+        stage2Active.put(base, true);
+        getLogger().info("[Stage2] loading for base " + base);
+        pasteStage2Schematic(base, sc.schematic, () -> {
+            if (sc.mobPoint != null && !sc.mobPoint.isEmpty()) {
+                List<String> mp = baseMobSpawnPoints.get(base);
+                if (mp != null && !mp.contains(sc.mobPoint)) mp.add(sc.mobPoint);
+            }
+            if (sc.collectorPoint != null && !sc.collectorPoint.isEmpty()) {
+                List<String> cp = baseCollectorPoints.get(base);
+                if (cp != null && !cp.contains(sc.collectorPoint)) cp.add(sc.collectorPoint);
+            }
+            getLogger().info("[Stage2] slot+collector added for base " + base);
+        });
+    }
+    private void unloadStage2(String base) {
+        Stage2Config sc = stage2Configs.get(base);
+        if (sc == null) return;
+        if (!Boolean.TRUE.equals(stage2Active.get(base))) return;
+        stage2Active.put(base, false);
+        if (sc.mobPoint != null && !sc.mobPoint.isEmpty()) {
+            List<String> mp = baseMobSpawnPoints.get(base);
+            if (mp != null) mp.remove(sc.mobPoint);
+            Set<String> occ = occupiedMobPoints.get(base);
+            if (occ != null) occ.remove(sc.mobPoint);
+            animatingPoints.remove(sc.mobPoint);
+        }
+        if (sc.collectorPoint != null && !sc.collectorPoint.isEmpty()) {
+            List<String> cp = baseCollectorPoints.get(base);
+            if (cp != null) cp.remove(sc.collectorPoint);
+        }
+        getLogger().info("[Stage2] unloading for base " + base);
+        pasteStage2Schematic(base, sc.emptySchematic, null);
+    }
+    private File resolveSchematicFile(String name) {
+        if (name == null || name.isEmpty()) return null;
+        String fn = (name.endsWith(".schem") || name.endsWith(".schematic")) ? name : name + ".schem";
+        File local = new File(new File(getDataFolder(), "schematics"), fn);
+        if (local.exists()) return local;
+        File parent = getDataFolder().getParentFile();
+        if (parent != null) {
+            File fawe = new File(parent, "FastAsyncWorldEdit/schematics/" + fn);
+            if (fawe.exists()) return fawe;
+            File we = new File(parent, "WorldEdit/schematics/" + fn);
+            if (we.exists()) return we;
+        }
+        return local;
+    }
+    private void pasteStage2Schematic(String base, String schemName, Runnable afterMain) {
+        Stage2Config sc = stage2Configs.get(base);
+        if (sc == null) return;
+        if (schemName == null || schemName.isEmpty()) {
+            if (afterMain != null) Bukkit.getScheduler().runTask(this, afterMain);
+            return;
+        }
+        Location l1 = getLocationFromPoint(sc.pos1);
+        Location l2 = getLocationFromPoint(sc.pos2);
+        if (l1 == null || l2 == null || l1.getWorld() == null) {
+            getLogger().warning("[Stage2] base " + base + ": invalid pos1/pos2");
+            return;
+        }
+        final World world = l1.getWorld();
+        final int minX = Math.min(l1.getBlockX(), l2.getBlockX());
+        final int minY = Math.min(l1.getBlockY(), l2.getBlockY());
+        final int minZ = Math.min(l1.getBlockZ(), l2.getBlockZ());
+        final File file = resolveSchematicFile(schemName);
+        if (file == null || !file.exists()) {
+            getLogger().warning("[Stage2] base " + base + ": schematic file not found: " + schemName);
+            return;
+        }
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                ClipboardFormat format = ClipboardFormats.findByFile(file);
+                if (format == null) {
+                    getLogger().warning("[Stage2] base " + base + ": unknown schematic format " + file.getName());
+                    return;
+                }
+                Clipboard clipboard;
+                try (java.io.FileInputStream fis = new java.io.FileInputStream(file);
+                     ClipboardReader reader = format.getReader(fis)) {
+                    clipboard = reader.read();
+                }
+                com.sk89q.worldedit.world.World weWorld = BukkitAdapter.adapt(world);
+                try (EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder().world(weWorld).build()) {
+                    Operation operation = new ClipboardHolder(clipboard)
+                        .createPaste(editSession)
+                        .to(BlockVector3.at(minX, minY, minZ))
+                        .ignoreAirBlocks(false)
+                        .build();
+                    Operations.complete(operation);
+                }
+                getLogger().info("[Stage2] base " + base + ": pasted '" + schemName + "' at " + minX + "," + minY + "," + minZ);
+            } catch (Throwable t) {
+                getLogger().severe("[Stage2] base " + base + ": paste error '" + schemName + "': " + t);
+            }
+            if (afterMain != null) Bukkit.getScheduler().runTask(this, afterMain);
+        });
+    }
     private void loadBases() {
         FileConfiguration cfg = getConfig();
         if (!cfg.contains("bases")) return;
@@ -4361,6 +4532,23 @@ private boolean isBaseMob(Entity entity) {
             if (kickPoints.isEmpty()) {
                 getLogger().warning("У базы " + key + " нет точек кика (kick_points) в конфиге!");
             }
+            ConfigurationSection st2sec = cfg.getConfigurationSection("bases." + key + ".stage2");
+            if (st2sec != null && st2sec.getBoolean("enabled", false)) {
+                Stage2Config sc = new Stage2Config();
+                sc.enabled = true;
+                sc.world = st2sec.getString("world", cfg.getString("bases." + key + ".world", "world"));
+                sc.schematic = st2sec.getString("schematic");
+                sc.emptySchematic = st2sec.getString("empty_schematic");
+                sc.pos1 = st2sec.getString("pos1");
+                sc.pos2 = st2sec.getString("pos2");
+                sc.mobPoint = st2sec.getString("mob_point");
+                sc.collectorPoint = st2sec.getString("collector_point");
+                sc.laserPoint = st2sec.getString("laser_point");
+                sc.requiredRebirths = st2sec.getInt("required_rebirths", 2);
+                stage2Configs.put(key, sc);
+                getLogger().info("[Stage2] base " + key + " configured (schem=" + sc.schematic + ", req=" + sc.requiredRebirths + ")");
+            }
+            stage2Active.put(key, false);
             baseLocked.put(key, false);
             baseLockTime.put(key, 0);
         }
@@ -8076,6 +8264,13 @@ public List<String> getMobPoints(String baseName) {
             if (rebirthCount > 0) {
                 sendCooldownMessage(p, "§6Перерождений: §e" + rebirthCount + " §6| Множитель: §e" + getPlayerMultiplier(p) + "x", lastCollectMessage);
             }
+            String st2JoinBase = findPlayerBase(p);
+            if (st2JoinBase != null && stage2Configs.containsKey(st2JoinBase)) {
+                Stage2Config st2sc = stage2Configs.get(st2JoinBase);
+                if (getRebirthCount(p) >= st2sc.requiredRebirths) {
+                    loadStage2(st2JoinBase);
+                }
+            }
             debugLog("========== [JOIN DEBUG] Завершено ==========");
         }, 20L);
     }
@@ -8156,6 +8351,9 @@ public List<String> getMobPoints(String baseName) {
             updateHologram(playerBase);
             if (baseLocked.getOrDefault(playerBase, false)) {
                 unlockBase(playerBase);
+            }
+            if (stage2Active.getOrDefault(playerBase, false)) {
+                unloadStage2(playerBase);
             }
             collectorCooldowns.remove(playerBase);
         }
