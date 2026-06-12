@@ -4481,6 +4481,9 @@ private boolean isBaseMob(Entity entity) {
                      ClipboardReader reader = format.getReader(fis)) {
                     clipboard = reader.read();
                 }
+                // Reset origin to the schematic's minimum corner so the paste
+                // aligns exactly to pos1/pos2 regardless of the //copy position.
+                clipboard.setOrigin(clipboard.getRegion().getMinimumPoint());
                 com.sk89q.worldedit.world.World weWorld = BukkitAdapter.adapt(world);
                 try (EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder().world(weWorld).build()) {
                     Operation operation = new ClipboardHolder(clipboard)
