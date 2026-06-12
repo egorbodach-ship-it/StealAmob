@@ -153,17 +153,25 @@ public class BrainrotBases extends JavaPlugin implements Listener {
     private final Map<String, String> baseParticlePoints = new HashMap<>();
     private final Map<String, Stage2Config> stage2Configs = new HashMap<>();
     private final Map<String, Boolean> stage2Active = new ConcurrentHashMap<>();
+    private final Map<String, StageDef> activeStageDef = new ConcurrentHashMap<>();
+    private static class StageDef {
+        int requiredRebirths = 2;
+        String schematic;
+        String pos1;
+        String pos2;
+        java.util.List<String> mobPoints = new java.util.ArrayList<>();
+        java.util.List<String> collectorPoints = new java.util.ArrayList<>();
+        String laserPoint;
+        String laserAxis = "x";
+        int laserLength = 15;
+    }
     private static class Stage2Config {
         boolean enabled;
         String world;
-        String schematic;
         String emptySchematic;
         String pos1;
         String pos2;
-        String mobPoint;
-        String collectorPoint;
-        String laserPoint;
-        int requiredRebirths = 2;
+        java.util.List<StageDef> stages = new java.util.ArrayList<>();
     }
  private final Map<Entity, Entity> luckyBlockHitboxMap = new ConcurrentHashMap<>();
  private final Map<Entity, String> luckyBlockTags = new ConcurrentHashMap<>();
@@ -1369,18 +1377,17 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                     }
                 }
             }
-            for (Map.Entry<String, Boolean> st2e : new HashMap<>(stage2Active).entrySet()) {
-                if (!Boolean.TRUE.equals(st2e.getValue())) continue;
+            for (Map.Entry<String, StageDef> st2e : new HashMap<>(activeStageDef).entrySet()) {
                 String st2base = st2e.getKey();
-                Stage2Config sc = stage2Configs.get(st2base);
-                if (sc == null || sc.laserPoint == null || sc.laserPoint.isEmpty()) continue;
+                StageDef sd = st2e.getValue();
+                if (sd == null || sd.laserPoint == null || sd.laserPoint.isEmpty()) continue;
                 String st2owner = bases.get(st2base);
                 if (st2owner == null || st2owner.equals("none")) continue;
-                Location laserLoc = getLocationFromPoint(sc.laserPoint);
+                Location laserLoc = getLocationFromPoint(sd.laserPoint);
                 if (laserLoc == null || laserLoc.getWorld() == null) continue;
                 for (Player player : laserLoc.getWorld().getPlayers()) {
                     if (player.getName().equals(st2owner)) continue;
-                    if (isPlayerNearParticleWall(player, sc.laserPoint)) {
+                    if (isPlayerNearLaser(player, sd.laserPoint, sd.laserAxis, sd.laserLength)) {
                         executeKick(player, st2base, currentTime, KickReason.PARTICLE_WALL);
                     }
                 }
@@ -1578,11 +1585,10 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                         }
                     }
                 }
-                for (Map.Entry<String, Boolean> st2e : new HashMap<>(stage2Active).entrySet()) {
-                    if (!Boolean.TRUE.equals(st2e.getValue())) continue;
-                    Stage2Config sc = stage2Configs.get(st2e.getKey());
-                    if (sc == null || sc.laserPoint == null) continue;
-                    String[] s = sc.laserPoint.split("_");
+                for (Map.Entry<String, StageDef> st2e : new HashMap<>(activeStageDef).entrySet()) {
+                    StageDef sd = st2e.getValue();
+                    if (sd == null || sd.laserPoint == null) continue;
+                    String[] s = sd.laserPoint.split("_");
                     if (s.length != 4) continue;
                     try {
                         World world = Bukkit.getWorld(s[0]);
@@ -1590,11 +1596,12 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                         double startX = Integer.parseInt(s[1]) + 0.5;
                         double startY = Integer.parseInt(s[2]);
                         double startZ = Integer.parseInt(s[3]) + 0.5;
-                        int rowLength = 15;
+                        int rowLength = sd.laserLength;
                         double height = 6;
+                        boolean alongZ = "z".equalsIgnoreCase(sd.laserAxis);
                         for (int i = 0; i <= rowLength; i++) {
-                            double currentX = startX + i;
-                            double currentZ = startZ;
+                            double currentX = alongZ ? startX : startX + i;
+                            double currentZ = alongZ ? startZ + i : startZ;
                             for (double y = startY; y <= startY + height; y += 0.5) {
                                 world.spawnParticle(Particle.DUST, currentX, y, currentZ, 1,
                                     new Particle.DustOptions(org.bukkit.Color.RED, 1.0f));
@@ -1630,6 +1637,34 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                 if (dx < 1.5 && dz < 1.5) {
                     return true;
                 }
+            }
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        return false;
+    }
+    private boolean isPlayerNearLaser(Player player, String particlePoint, String axis, int length) {
+        if (player == null || particlePoint == null) return false;
+        String[] s = particlePoint.split("_");
+        if (s.length != 4) return false;
+        try {
+            World world = Bukkit.getWorld(s[0]);
+            if (world == null || !world.equals(player.getWorld())) return false;
+            double startX = Integer.parseInt(s[1]) + 0.5;
+            double startY = Integer.parseInt(s[2]);
+            double startZ = Integer.parseInt(s[3]) + 0.5;
+            double height = 6;
+            boolean alongZ = "z".equalsIgnoreCase(axis);
+            double playerX = player.getLocation().getX();
+            double playerY = player.getLocation().getY();
+            double playerZ = player.getLocation().getZ();
+            if (playerY < startY - 0.5 || playerY > startY + height + 0.5) return false;
+            for (int i = 0; i <= length; i++) {
+                double lineX = alongZ ? startX : startX + i;
+                double lineZ = alongZ ? startZ + i : startZ;
+                double dx = Math.abs(playerX - lineX);
+                double dz = Math.abs(playerZ - lineZ);
+                if (dx < 1.5 && dz < 1.5) return true;
             }
         } catch (NumberFormatException e) {
             return false;
@@ -4396,42 +4431,60 @@ private boolean isBaseMob(Entity entity) {
             }
         }
     }
-    private void loadStage2(String base) {
+    private StageDef getTargetStage(String base, int rebirthCount) {
+        Stage2Config sc = stage2Configs.get(base);
+        if (sc == null || !sc.enabled) return null;
+        StageDef best = null;
+        for (StageDef s : sc.stages) {
+            if (rebirthCount >= s.requiredRebirths) {
+                if (best == null || s.requiredRebirths > best.requiredRebirths) best = s;
+            }
+        }
+        return best;
+    }
+    private void addStagePoints(String base, StageDef s) {
+        List<String> mp = baseMobSpawnPoints.get(base);
+        if (mp != null) for (String pt : s.mobPoints) if (pt != null && !pt.isEmpty() && !mp.contains(pt)) mp.add(pt);
+        List<String> cp = baseCollectorPoints.get(base);
+        if (cp != null) for (String pt : s.collectorPoints) if (pt != null && !pt.isEmpty() && !cp.contains(pt)) cp.add(pt);
+        getLogger().info("[Stage2] points added for base " + base + " (+" + s.mobPoints.size() + " mob, +" + s.collectorPoints.size() + " col)");
+    }
+    private void removeStagePoints(String base, StageDef s) {
+        List<String> mp = baseMobSpawnPoints.get(base);
+        Set<String> occ = occupiedMobPoints.get(base);
+        if (mp != null) for (String pt : s.mobPoints) { mp.remove(pt); if (occ != null) occ.remove(pt); animatingPoints.remove(pt); }
+        List<String> cp = baseCollectorPoints.get(base);
+        if (cp != null) for (String pt : s.collectorPoints) cp.remove(pt);
+    }
+    private void applyStage(String base, int rebirthCount) {
         Stage2Config sc = stage2Configs.get(base);
         if (sc == null || !sc.enabled) return;
-        if (Boolean.TRUE.equals(stage2Active.get(base))) return;
+        final StageDef target = getTargetStage(base, rebirthCount);
+        final StageDef current = activeStageDef.get(base);
+        if (target == current) return;
+        if (current != null) removeStagePoints(base, current);
+        if (target == null) {
+            activeStageDef.remove(base);
+            stage2Active.put(base, false);
+            getLogger().info("[Stage2] base " + base + ": restoring original (rebirth=" + rebirthCount + ")");
+            pasteStage2Schematic(base, sc.emptySchematic, sc.pos1, sc.pos2, null);
+            return;
+        }
+        activeStageDef.put(base, target);
         stage2Active.put(base, true);
-        getLogger().info("[Stage2] loading for base " + base);
-        pasteStage2Schematic(base, sc.schematic, () -> {
-            if (sc.mobPoint != null && !sc.mobPoint.isEmpty()) {
-                List<String> mp = baseMobSpawnPoints.get(base);
-                if (mp != null && !mp.contains(sc.mobPoint)) mp.add(sc.mobPoint);
-            }
-            if (sc.collectorPoint != null && !sc.collectorPoint.isEmpty()) {
-                List<String> cp = baseCollectorPoints.get(base);
-                if (cp != null && !cp.contains(sc.collectorPoint)) cp.add(sc.collectorPoint);
-            }
-            getLogger().info("[Stage2] slot+collector added for base " + base);
-        });
+        getLogger().info("[Stage2] base " + base + ": applying stage req=" + target.requiredRebirths + " schem=" + target.schematic + " (rebirth=" + rebirthCount + ")");
+        pasteStage2Schematic(base, target.schematic, target.pos1, target.pos2, () -> addStagePoints(base, target));
     }
-    private void unloadStage2(String base) {
+    private void restoreStage(String base) {
         Stage2Config sc = stage2Configs.get(base);
         if (sc == null) return;
-        if (!Boolean.TRUE.equals(stage2Active.get(base))) return;
+        StageDef current = activeStageDef.get(base);
+        if (current == null && !Boolean.TRUE.equals(stage2Active.get(base))) return;
+        if (current != null) removeStagePoints(base, current);
+        activeStageDef.remove(base);
         stage2Active.put(base, false);
-        if (sc.mobPoint != null && !sc.mobPoint.isEmpty()) {
-            List<String> mp = baseMobSpawnPoints.get(base);
-            if (mp != null) mp.remove(sc.mobPoint);
-            Set<String> occ = occupiedMobPoints.get(base);
-            if (occ != null) occ.remove(sc.mobPoint);
-            animatingPoints.remove(sc.mobPoint);
-        }
-        if (sc.collectorPoint != null && !sc.collectorPoint.isEmpty()) {
-            List<String> cp = baseCollectorPoints.get(base);
-            if (cp != null) cp.remove(sc.collectorPoint);
-        }
-        getLogger().info("[Stage2] unloading for base " + base);
-        pasteStage2Schematic(base, sc.emptySchematic, null);
+        getLogger().info("[Stage2] base " + base + ": unloading -> restore original");
+        pasteStage2Schematic(base, sc.emptySchematic, sc.pos1, sc.pos2, null);
     }
     private File resolveSchematicFile(String name) {
         if (name == null || name.isEmpty()) return null;
@@ -4447,15 +4500,13 @@ private boolean isBaseMob(Entity entity) {
         }
         return local;
     }
-    private void pasteStage2Schematic(String base, String schemName, Runnable afterMain) {
-        Stage2Config sc = stage2Configs.get(base);
-        if (sc == null) return;
+    private void pasteStage2Schematic(String base, String schemName, String pos1, String pos2, Runnable afterMain) {
         if (schemName == null || schemName.isEmpty()) {
             if (afterMain != null) Bukkit.getScheduler().runTask(this, afterMain);
             return;
         }
-        Location l1 = getLocationFromPoint(sc.pos1);
-        Location l2 = getLocationFromPoint(sc.pos2);
+        Location l1 = getLocationFromPoint(pos1);
+        Location l2 = getLocationFromPoint(pos2);
         if (l1 == null || l2 == null || l1.getWorld() == null) {
             getLogger().warning("[Stage2] base " + base + ": invalid pos1/pos2");
             return;
@@ -4540,16 +4591,46 @@ private boolean isBaseMob(Entity entity) {
                 Stage2Config sc = new Stage2Config();
                 sc.enabled = true;
                 sc.world = st2sec.getString("world", cfg.getString("bases." + key + ".world", "world"));
-                sc.schematic = st2sec.getString("schematic");
                 sc.emptySchematic = st2sec.getString("empty_schematic");
                 sc.pos1 = st2sec.getString("pos1");
                 sc.pos2 = st2sec.getString("pos2");
-                sc.mobPoint = st2sec.getString("mob_point");
-                sc.collectorPoint = st2sec.getString("collector_point");
-                sc.laserPoint = st2sec.getString("laser_point");
-                sc.requiredRebirths = st2sec.getInt("required_rebirths", 2);
+                java.util.List<Map<?, ?>> stageMaps = st2sec.getMapList("stages");
+                if (stageMaps != null && !stageMaps.isEmpty()) {
+                    for (Map<?, ?> m : stageMaps) {
+                        StageDef sd = new StageDef();
+                        Object rr = m.get("required_rebirths");
+                        sd.requiredRebirths = (rr instanceof Number) ? ((Number) rr).intValue() : 2;
+                        sd.schematic = (m.get("schematic") != null) ? String.valueOf(m.get("schematic")) : null;
+                        sd.pos1 = (m.get("pos1") != null) ? String.valueOf(m.get("pos1")) : sc.pos1;
+                        sd.pos2 = (m.get("pos2") != null) ? String.valueOf(m.get("pos2")) : sc.pos2;
+                        Object mpo = m.get("mob_points");
+                        if (mpo instanceof java.util.List) for (Object o : (java.util.List<?>) mpo) sd.mobPoints.add(String.valueOf(o));
+                        Object cpo = m.get("collector_points");
+                        if (cpo instanceof java.util.List) for (Object o : (java.util.List<?>) cpo) sd.collectorPoints.add(String.valueOf(o));
+                        if (m.get("laser_point") != null) sd.laserPoint = String.valueOf(m.get("laser_point"));
+                        if (m.get("laser_axis") != null) sd.laserAxis = String.valueOf(m.get("laser_axis"));
+                        Object ll = m.get("laser_length");
+                        if (ll instanceof Number) sd.laserLength = ((Number) ll).intValue();
+                        sc.stages.add(sd);
+                    }
+                } else {
+                    StageDef sd = new StageDef();
+                    sd.requiredRebirths = st2sec.getInt("required_rebirths", 2);
+                    sd.schematic = st2sec.getString("schematic");
+                    sd.pos1 = sc.pos1;
+                    sd.pos2 = sc.pos2;
+                    String mp = st2sec.getString("mob_point");
+                    if (mp != null && !mp.isEmpty()) sd.mobPoints.add(mp);
+                    String cp = st2sec.getString("collector_point");
+                    if (cp != null && !cp.isEmpty()) sd.collectorPoints.add(cp);
+                    sd.laserPoint = st2sec.getString("laser_point");
+                    sd.laserAxis = st2sec.getString("laser_axis", "x");
+                    sd.laserLength = st2sec.getInt("laser_length", 15);
+                    sc.stages.add(sd);
+                }
+                sc.stages.sort((a, b) -> Integer.compare(a.requiredRebirths, b.requiredRebirths));
                 stage2Configs.put(key, sc);
-                getLogger().info("[Stage2] base " + key + " configured (schem=" + sc.schematic + ", req=" + sc.requiredRebirths + ")");
+                getLogger().info("[Stage2] base " + key + " configured (" + sc.stages.size() + " stage(s))");
             }
             stage2Active.put(key, false);
             baseLocked.put(key, false);
@@ -7664,6 +7745,8 @@ private boolean isBaseMob(Entity entity) {
         setPlayerEarnMultiplier(player);
         int newRebirthCount = getRebirthCount(player);
         double newMultiplier = getPlayerEarnMultiplier(player);
+        String rebirthBaseName = findPlayerBase(player);
+        if (rebirthBaseName != null) applyStage(rebirthBaseName, newRebirthCount);
         player.sendMessage("§6§l══════════════════════════════════");
         player.sendMessage("§a§l          ПЕРЕРОЖДЕНИЕ #" + newRebirthCount + " УСПЕШНО!");
         player.sendMessage("");
@@ -8269,10 +8352,7 @@ public List<String> getMobPoints(String baseName) {
             }
             String st2JoinBase = findPlayerBase(p);
             if (st2JoinBase != null && stage2Configs.containsKey(st2JoinBase)) {
-                Stage2Config st2sc = stage2Configs.get(st2JoinBase);
-                if (getRebirthCount(p) >= st2sc.requiredRebirths) {
-                    loadStage2(st2JoinBase);
-                }
+                applyStage(st2JoinBase, getRebirthCount(p));
             }
             debugLog("========== [JOIN DEBUG] Завершено ==========");
         }, 20L);
@@ -8355,8 +8435,8 @@ public List<String> getMobPoints(String baseName) {
             if (baseLocked.getOrDefault(playerBase, false)) {
                 unlockBase(playerBase);
             }
-            if (stage2Active.getOrDefault(playerBase, false)) {
-                unloadStage2(playerBase);
+            if (activeStageDef.containsKey(playerBase) || stage2Active.getOrDefault(playerBase, false)) {
+                restoreStage(playerBase);
             }
             collectorCooldowns.remove(playerBase);
         }
