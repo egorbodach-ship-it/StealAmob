@@ -6314,7 +6314,7 @@ private boolean isBaseMob(Entity entity) {
                     } catch (Exception e) {
                         getLogger().warning("[LUCKY BLOCK] Ошибка анимации: " + e.getMessage());
                     }
-                }, 5L);
+                }, 45L);
                 if (doEffects) {
                     world.spawnParticle(Particle.END_ROD, spawnLoc, 50, 0.5, 0.5, 0.5, 0.1);
                     world.playSound(spawnLoc, Sound.UI_TOAST_CHALLENGE_COMPLETE, 0.7f, 1.2f);
@@ -7911,6 +7911,7 @@ private boolean isBaseMob(Entity entity) {
             Set<String> occupied = occupiedMobPoints.get(playerBase);
             if (occupied != null) occupied.clear();
             cleanupCollectorLinksForBase(playerBase);
+            clearAllAuctionListingsForBase(playerBase);
         }
         savedPlayerMobs.remove(player.getName());
         if (mobsConfig != null) {
@@ -8509,6 +8510,7 @@ public List<String> getMobPoints(String baseName) {
                 removeAllMobsFromBase(selectedBase);
                 Set<String> occupied = occupiedMobPoints.get(selectedBase);
                 if (occupied != null) occupied.clear();
+                clearAllAuctionListingsForBase(selectedBase);
                 bases.put(selectedBase, playerName);
                 teleportToBaseSpawn(p, selectedBase);
                 updateHologram(selectedBase);
@@ -8620,6 +8622,7 @@ public List<String> getMobPoints(String baseName) {
             if (bPoints != null) {
                 animatingPoints.removeAll(bPoints);
             }
+            clearAllAuctionListingsForBase(playerBase);
             bases.put(playerBase, "none");
             updateHologram(playerBase);
             if (baseLocked.getOrDefault(playerBase, false)) {
@@ -9069,6 +9072,26 @@ public List<String> getMobPoints(String baseName) {
         if (base == null || mobPoint == null) return;
         auctionListedPoints.remove(auctionKey(base, mobPoint));
         refreshMobHologramForPoint(base, mobPoint);
+    }
+
+    /**
+     * Remove ALL auction listings tied to a base (used when the base is freed on
+     * quit, reassigned to a new owner, or wiped by rebirth). Clears the in-auction
+     * flag + red hologram for every slot and notifies the auction plugin so the
+     * lot is dropped from listings.yml / the auction GUI.
+     */
+    private void clearAllAuctionListingsForBase(String base) {
+        if (base == null) return;
+        String prefix = base + "\u0000";
+        for (String key : new ArrayList<>(auctionListedPoints)) {
+            if (!key.startsWith(prefix)) continue;
+            String mobPoint = key.substring(prefix.length());
+            auctionListedPoints.remove(key);
+            removeAuctionHologram(base, mobPoint);
+            if (auctionHook != null) {
+                try { auctionHook.onListedMobRemoved(base, mobPoint); } catch (Exception ignored) {}
+            }
+        }
     }
 
     private void createAuctionHologram(String base, String mobPoint) {

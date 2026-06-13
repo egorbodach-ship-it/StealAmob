@@ -178,7 +178,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     }
 
     private enum MobData {
-        CHICKEN("Курица", EntityType.CHICKEN, 250, 3, 20, Rarity.COMMON),
+        CHICKEN("Курица", EntityType.CHICKEN, 250, 3, 40, Rarity.COMMON),
         COW("Корова", EntityType.COW, 500, 5, 20, Rarity.COMMON),
         SHEEP("Овца", EntityType.SHEEP, 750, 7, 15, Rarity.COMMON),
         PIG("Свинья", EntityType.PIG, 1000, 9, 15, Rarity.COMMON),
@@ -1787,9 +1787,16 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private static final Vector LUCKY_MODEL_OFFSET = new Vector(0.55, 0.0, 0.1);
 
     private Location getLuckyVisualCenter(Location rootLoc) {
-        // __fix__ rotate model offset by yaw so the nametag stays centered in any walk direction
-        // (offset was authored in world space at yaw=180 / direction "forward")
-        return applyYawModelOffset(rootLoc, 0.55, -0.1);
+        // Offset of the AnimatedJava lucky-block model relative to its root entity.
+        // Standard AJ rigs are centered on the root, so default 0/0 keeps the hitbox +
+        // hologram on the model. If the model still looks shifted, tweak these two
+        // config values (in blocks) and /reload — no rebuild needed:
+        //   lucky_block.model_offset_right   (+ = toward the mob's right)
+        //   lucky_block.model_offset_forward (+ = toward the mob's facing direction)
+        double right = getConfig().getDouble("lucky_block.model_offset_right", 0.0);
+        double forward = getConfig().getDouble("lucky_block.model_offset_forward", 0.0);
+        if (right == 0.0 && forward == 0.0) return rootLoc.clone();
+        return applyYawModelOffset(rootLoc, right, forward);
     }
 
     // Applies a model-local offset (right = model's right side, forward = model facing)
