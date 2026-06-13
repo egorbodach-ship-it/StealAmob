@@ -3954,17 +3954,54 @@ private boolean isBaseMob(Entity entity) {
             getLogger().warning("Новая база " + newBase + " не имеет точек спавна или коллекторов");
             return;
         }
-        int mobPointIndex = 0;
-        int collectorIndex = 0;
+        java.util.Set<String> usedMobPoints = new java.util.HashSet<>();
+        java.util.Set<String> usedCollectorPoints = new java.util.HashSet<>();
+        java.util.List<SavedMobData> toRemap = new ArrayList<>();
+        // [FIX stage2-migrate] keep same-base mobs on their exact saved points (preserves 2nd floor),
+        // remap the rest onto FREE points only (no destructive index wraparound that lost 2nd-floor mobs)
         for (SavedMobData savedMob : savedMobs) {
-            if (mobPointIndex >= newMobPoints.size()) {
-                mobPointIndex = 0;
+            if (newBase.equals(savedMob.base)
+                    && savedMob.mobPoint != null && newMobPoints.contains(savedMob.mobPoint)
+                    && !usedMobPoints.contains(savedMob.mobPoint)) {
+                String cp = (savedMob.collectorPoint != null
+                        && newCollectorPoints.contains(savedMob.collectorPoint)
+                        && !usedCollectorPoints.contains(savedMob.collectorPoint))
+                        ? savedMob.collectorPoint : null;
+                if (cp == null) {
+                    for (String cand : newCollectorPoints) {
+                        if (!usedCollectorPoints.contains(cand)) { cp = cand; break; }
+                    }
+                }
+                if (cp == null && !newCollectorPoints.isEmpty()) cp = newCollectorPoints.get(0);
+                updatedMobs.add(new SavedMobData(
+                    newBase, savedMob.mobPoint, cp, savedMob.mobType,
+                    savedMob.mobType.isLuckyBlock() ? savedMob.luckyBlockRemainingMs : -1L,
+                    savedMob.mobType.isLuckyBlock() ? savedMob.luckyBlockReady : false,
+                    savedMob.mutation,
+                    savedMob.snowy
+                ));
+                usedMobPoints.add(savedMob.mobPoint);
+                if (cp != null) usedCollectorPoints.add(cp);
+            } else {
+                toRemap.add(savedMob);
             }
-            if (collectorIndex >= newCollectorPoints.size()) {
-                collectorIndex = 0;
+        }
+        for (SavedMobData savedMob : toRemap) {
+            String mobPoint = null;
+            for (String cand : newMobPoints) {
+                if (!usedMobPoints.contains(cand)) { mobPoint = cand; break; }
             }
-            String mobPoint = newMobPoints.get(mobPointIndex);
-            String collectorPoint = newCollectorPoints.get(collectorIndex);
+            if (mobPoint == null) {
+                getLogger().warning("[Stage2] no free mob point on base " + newBase + ", mob skipped");
+                continue;
+            }
+            usedMobPoints.add(mobPoint);
+            String collectorPoint = null;
+            for (String cand : newCollectorPoints) {
+                if (!usedCollectorPoints.contains(cand)) { collectorPoint = cand; break; }
+            }
+            if (collectorPoint == null && !newCollectorPoints.isEmpty()) collectorPoint = newCollectorPoints.get(0);
+            if (collectorPoint != null) usedCollectorPoints.add(collectorPoint);
             updatedMobs.add(new SavedMobData(
                 newBase, mobPoint, collectorPoint, savedMob.mobType,
                 savedMob.mobType.isLuckyBlock() ? savedMob.luckyBlockRemainingMs : -1L,
@@ -3972,11 +4009,6 @@ private boolean isBaseMob(Entity entity) {
                 savedMob.mutation,
                 savedMob.snowy
             ));
-            debugLog("  Перемещён: " + savedMob.mobType.name +
-                " mut=" + savedMob.mutation + " snowy=" + savedMob.snowy +
-                " -> " + mobPoint);
-            mobPointIndex++;
-            collectorIndex++;
         }
         savedPlayerMobs.put(playerName, updatedMobs);
         Bukkit.getScheduler().runTaskLater(this, () -> {
@@ -8481,6 +8513,11 @@ public List<String> getMobPoints(String baseName) {
                 teleportToBaseSpawn(p, selectedBase);
                 updateHologram(selectedBase);
                 if (hasSavedMobs) {
+                    // [FIX stage2-migrate] add stage-2 points BEFORE remapping saved mobs,
+                    // otherwise 2nd-floor mobs have no valid point yet and collapse to 1st floor
+                    if (stage2Configs.containsKey(selectedBase)) {
+                        applyStage(selectedBase, getRebirthCount(p));
+                    }
                     moveSavedMobsToNewBase(playerName, selectedBase);
                     sendCooldownMessage(p, "§a✅ Мобы перенесены на базу: §e" + selectedBase, lastCollectMessage);
                 }
