@@ -164,6 +164,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         String laserPoint;
         String laserAxis = "x";
         int laserLength = 15;
+        int laserHeight = 6;
     }
     private static class Stage2Config {
         boolean enabled;
@@ -1387,7 +1388,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                 if (laserLoc == null || laserLoc.getWorld() == null) continue;
                 for (Player player : laserLoc.getWorld().getPlayers()) {
                     if (player.getName().equals(st2owner)) continue;
-                    if (isPlayerNearLaser(player, sd.laserPoint, sd.laserAxis, sd.laserLength)) {
+                    if (isPlayerNearLaser(player, sd.laserPoint, sd.laserAxis, sd.laserLength, sd.laserHeight)) {
                         executeKick(player, st2base, currentTime, KickReason.PARTICLE_WALL);
                     }
                 }
@@ -1597,9 +1598,9 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                         double startY = Integer.parseInt(s[2]);
                         double startZ = Integer.parseInt(s[3]) + 0.5;
                         int rowLength = sd.laserLength;
-                        double height = 6;
+                        double height = sd.laserHeight;
                         boolean alongZ = "z".equalsIgnoreCase(sd.laserAxis);
-                        for (int i = 0; i <= rowLength; i++) {
+                        for (int i = 0; i < rowLength; i++) {
                             double currentX = alongZ ? startX : startX + i;
                             double currentZ = alongZ ? startZ + i : startZ;
                             for (double y = startY; y <= startY + height; y += 0.5) {
@@ -1643,7 +1644,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         }
         return false;
     }
-    private boolean isPlayerNearLaser(Player player, String particlePoint, String axis, int length) {
+    private boolean isPlayerNearLaser(Player player, String particlePoint, String axis, int length, int height) {
         if (player == null || particlePoint == null) return false;
         String[] s = particlePoint.split("_");
         if (s.length != 4) return false;
@@ -1653,13 +1654,12 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             double startX = Integer.parseInt(s[1]) + 0.5;
             double startY = Integer.parseInt(s[2]);
             double startZ = Integer.parseInt(s[3]) + 0.5;
-            double height = 6;
             boolean alongZ = "z".equalsIgnoreCase(axis);
             double playerX = player.getLocation().getX();
             double playerY = player.getLocation().getY();
             double playerZ = player.getLocation().getZ();
             if (playerY < startY - 0.5 || playerY > startY + height + 0.5) return false;
-            for (int i = 0; i <= length; i++) {
+            for (int i = 0; i < length; i++) {
                 double lineX = alongZ ? startX : startX + i;
                 double lineZ = alongZ ? startZ + i : startZ;
                 double dx = Math.abs(playerX - lineX);
@@ -4467,7 +4467,7 @@ private boolean isBaseMob(Entity entity) {
             activeStageDef.remove(base);
             stage2Active.put(base, false);
             getLogger().info("[Stage2] base " + base + ": restoring original (rebirth=" + rebirthCount + ")");
-            pasteStage2Schematic(base, sc.emptySchematic, sc.pos1, sc.pos2, null);
+            pasteStage2Schematic(base, sc.emptySchematic, sc.pos1, sc.pos2, null, true);
             return;
         }
         activeStageDef.put(base, target);
@@ -4484,7 +4484,7 @@ private boolean isBaseMob(Entity entity) {
         activeStageDef.remove(base);
         stage2Active.put(base, false);
         getLogger().info("[Stage2] base " + base + ": unloading -> restore original");
-        pasteStage2Schematic(base, sc.emptySchematic, sc.pos1, sc.pos2, null);
+        pasteStage2Schematic(base, sc.emptySchematic, sc.pos1, sc.pos2, null, true);
     }
     private File resolveSchematicFile(String name) {
         if (name == null || name.isEmpty()) return null;
@@ -4501,6 +4501,9 @@ private boolean isBaseMob(Entity entity) {
         return local;
     }
     private void pasteStage2Schematic(String base, String schemName, String pos1, String pos2, Runnable afterMain) {
+        pasteStage2Schematic(base, schemName, pos1, pos2, afterMain, false);
+    }
+    private void pasteStage2Schematic(String base, String schemName, String pos1, String pos2, Runnable afterMain, boolean clearFirst) {
         if (schemName == null || schemName.isEmpty()) {
             if (afterMain != null) Bukkit.getScheduler().runTask(this, afterMain);
             return;
@@ -4515,6 +4518,9 @@ private boolean isBaseMob(Entity entity) {
         final int minX = Math.min(l1.getBlockX(), l2.getBlockX());
         final int minY = Math.min(l1.getBlockY(), l2.getBlockY());
         final int minZ = Math.min(l1.getBlockZ(), l2.getBlockZ());
+        final int maxX = Math.max(l1.getBlockX(), l2.getBlockX());
+        final int maxY = Math.max(l1.getBlockY(), l2.getBlockY());
+        final int maxZ = Math.max(l1.getBlockZ(), l2.getBlockZ());
         final File file = resolveSchematicFile(schemName);
         if (file == null || !file.exists()) {
             getLogger().warning("[Stage2] base " + base + ": schematic file not found: " + schemName);
@@ -4537,6 +4543,12 @@ private boolean isBaseMob(Entity entity) {
                 clipboard.setOrigin(clipboard.getRegion().getMinimumPoint());
                 com.sk89q.worldedit.world.World weWorld = BukkitAdapter.adapt(world);
                 try (EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder().world(weWorld).build()) {
+                    if (clearFirst) {
+                        editSession.setBlocks(
+                            new com.sk89q.worldedit.regions.CuboidRegion(weWorld, BlockVector3.at(minX, minY, minZ), BlockVector3.at(maxX, maxY, maxZ)),
+                            com.sk89q.worldedit.world.block.BlockTypes.AIR.getDefaultState());
+                        getLogger().info("[Stage2] base " + base + ": cleared region " + minX + "," + minY + "," + minZ + " -> " + maxX + "," + maxY + "," + maxZ);
+                    }
                     Operation operation = new ClipboardHolder(clipboard)
                         .createPaste(editSession)
                         .to(BlockVector3.at(minX, minY, minZ))
@@ -4611,6 +4623,8 @@ private boolean isBaseMob(Entity entity) {
                         if (m.get("laser_axis") != null) sd.laserAxis = String.valueOf(m.get("laser_axis"));
                         Object ll = m.get("laser_length");
                         if (ll instanceof Number) sd.laserLength = ((Number) ll).intValue();
+                        Object lhh = m.get("laser_height");
+                        if (lhh instanceof Number) sd.laserHeight = ((Number) lhh).intValue();
                         sc.stages.add(sd);
                     }
                 } else {
@@ -4626,6 +4640,7 @@ private boolean isBaseMob(Entity entity) {
                     sd.laserPoint = st2sec.getString("laser_point");
                     sd.laserAxis = st2sec.getString("laser_axis", "x");
                     sd.laserLength = st2sec.getInt("laser_length", 15);
+                    sd.laserHeight = st2sec.getInt("laser_height", 6);
                     sc.stages.add(sd);
                 }
                 sc.stages.sort((a, b) -> Integer.compare(a.requiredRebirths, b.requiredRebirths));
