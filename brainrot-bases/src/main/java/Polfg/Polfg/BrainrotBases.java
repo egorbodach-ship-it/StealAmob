@@ -165,6 +165,13 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         String laserAxis = "x";
         int laserLength = 15;
         int laserHeight = 6;
+        java.util.List<LaserDef> lasers = new java.util.ArrayList<>();
+    }
+    private static class LaserDef {
+        String point;
+        String axis = "x";
+        int length = 15;
+        int height = 6;
     }
     private static class Stage2Config {
         boolean enabled;
@@ -1381,15 +1388,19 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             for (Map.Entry<String, StageDef> st2e : new HashMap<>(activeStageDef).entrySet()) {
                 String st2base = st2e.getKey();
                 StageDef sd = st2e.getValue();
-                if (sd == null || sd.laserPoint == null || sd.laserPoint.isEmpty()) continue;
+                if (sd == null || sd.lasers == null || sd.lasers.isEmpty()) continue;
+                if (!baseLocked.getOrDefault(st2base, false)) continue;
                 String st2owner = bases.get(st2base);
                 if (st2owner == null || st2owner.equals("none")) continue;
-                Location laserLoc = getLocationFromPoint(sd.laserPoint);
-                if (laserLoc == null || laserLoc.getWorld() == null) continue;
-                for (Player player : laserLoc.getWorld().getPlayers()) {
-                    if (player.getName().equals(st2owner)) continue;
-                    if (isPlayerNearLaser(player, sd.laserPoint, sd.laserAxis, sd.laserLength, sd.laserHeight)) {
-                        executeKick(player, st2base, currentTime, KickReason.PARTICLE_WALL);
+                for (LaserDef ld : sd.lasers) {
+                    if (ld.point == null || ld.point.isEmpty()) continue;
+                    Location laserLoc = getLocationFromPoint(ld.point);
+                    if (laserLoc == null || laserLoc.getWorld() == null) continue;
+                    for (Player player : laserLoc.getWorld().getPlayers()) {
+                        if (player.getName().equals(st2owner)) continue;
+                        if (isPlayerNearLaser(player, ld.point, ld.axis, ld.length, ld.height)) {
+                            executeKick(player, st2base, currentTime, KickReason.PARTICLE_WALL);
+                        }
                     }
                 }
             }
@@ -1588,27 +1599,31 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                 }
                 for (Map.Entry<String, StageDef> st2e : new HashMap<>(activeStageDef).entrySet()) {
                     StageDef sd = st2e.getValue();
-                    if (sd == null || sd.laserPoint == null) continue;
-                    String[] s = sd.laserPoint.split("_");
-                    if (s.length != 4) continue;
-                    try {
-                        World world = Bukkit.getWorld(s[0]);
-                        if (world == null) continue;
-                        double startX = Integer.parseInt(s[1]) + 0.5;
-                        double startY = Integer.parseInt(s[2]);
-                        double startZ = Integer.parseInt(s[3]) + 0.5;
-                        int rowLength = sd.laserLength;
-                        double height = sd.laserHeight;
-                        boolean alongZ = "z".equalsIgnoreCase(sd.laserAxis);
-                        for (int i = 0; i < rowLength; i++) {
-                            double currentX = alongZ ? startX : startX + i;
-                            double currentZ = alongZ ? startZ + i : startZ;
-                            for (double y = startY; y <= startY + height; y += 0.5) {
-                                world.spawnParticle(Particle.DUST, currentX, y, currentZ, 1,
-                                    new Particle.DustOptions(org.bukkit.Color.RED, 1.0f));
+                    if (sd == null || sd.lasers == null || sd.lasers.isEmpty()) continue;
+                    if (!baseLocked.getOrDefault(st2e.getKey(), false)) continue;
+                    for (LaserDef ld : sd.lasers) {
+                        if (ld.point == null) continue;
+                        String[] s = ld.point.split("_");
+                        if (s.length != 4) continue;
+                        try {
+                            World world = Bukkit.getWorld(s[0]);
+                            if (world == null) continue;
+                            double startX = Integer.parseInt(s[1]) + 0.5;
+                            double startY = Integer.parseInt(s[2]);
+                            double startZ = Integer.parseInt(s[3]) + 0.5;
+                            int rowLength = ld.length;
+                            double height = ld.height;
+                            boolean alongZ = "z".equalsIgnoreCase(ld.axis);
+                            for (int i = 0; i < rowLength; i++) {
+                                double currentX = alongZ ? startX : startX + i;
+                                double currentZ = alongZ ? startZ + i : startZ;
+                                for (double y = startY; y <= startY + height; y += 0.5) {
+                                    world.spawnParticle(Particle.DUST, currentX, y, currentZ, 1,
+                                        new Particle.DustOptions(org.bukkit.Color.RED, 1.0f));
+                                }
                             }
+                        } catch (NumberFormatException e) {
                         }
-                    } catch (NumberFormatException e) {
                     }
                 }
             }
@@ -4634,6 +4649,26 @@ private boolean isBaseMob(Entity entity) {
                         if (ll instanceof Number) sd.laserLength = ((Number) ll).intValue();
                         Object lhh = m.get("laser_height");
                         if (lhh instanceof Number) sd.laserHeight = ((Number) lhh).intValue();
+                        Object lasersObj = m.get("lasers");
+                        if (lasersObj instanceof java.util.List) {
+                            for (Object lo : (java.util.List<?>) lasersObj) {
+                                if (!(lo instanceof Map)) continue;
+                                Map<?, ?> lm = (Map<?, ?>) lo;
+                                LaserDef ld = new LaserDef();
+                                if (lm.get("point") != null) ld.point = String.valueOf(lm.get("point"));
+                                if (lm.get("axis") != null) ld.axis = String.valueOf(lm.get("axis"));
+                                Object lgo = lm.get("length");
+                                if (lgo instanceof Number) ld.length = ((Number) lgo).intValue();
+                                Object lho = lm.get("height");
+                                if (lho instanceof Number) ld.height = ((Number) lho).intValue();
+                                if (ld.point != null && !ld.point.isEmpty()) sd.lasers.add(ld);
+                            }
+                        }
+                        if (sd.lasers.isEmpty() && sd.laserPoint != null && !sd.laserPoint.isEmpty()) {
+                            LaserDef ld0 = new LaserDef();
+                            ld0.point = sd.laserPoint; ld0.axis = sd.laserAxis; ld0.length = sd.laserLength; ld0.height = sd.laserHeight;
+                            sd.lasers.add(ld0);
+                        }
                         sc.stages.add(sd);
                     }
                 } else {
@@ -4650,6 +4685,24 @@ private boolean isBaseMob(Entity entity) {
                     sd.laserAxis = st2sec.getString("laser_axis", "x");
                     sd.laserLength = st2sec.getInt("laser_length", 15);
                     sd.laserHeight = st2sec.getInt("laser_height", 6);
+                    java.util.List<Map<?, ?>> laserMaps = st2sec.getMapList("lasers");
+                    if (laserMaps != null && !laserMaps.isEmpty()) {
+                        for (Map<?, ?> lm : laserMaps) {
+                            LaserDef ld = new LaserDef();
+                            if (lm.get("point") != null) ld.point = String.valueOf(lm.get("point"));
+                            if (lm.get("axis") != null) ld.axis = String.valueOf(lm.get("axis"));
+                            Object lgo = lm.get("length");
+                            if (lgo instanceof Number) ld.length = ((Number) lgo).intValue();
+                            Object lho = lm.get("height");
+                            if (lho instanceof Number) ld.height = ((Number) lho).intValue();
+                            if (ld.point != null && !ld.point.isEmpty()) sd.lasers.add(ld);
+                        }
+                    }
+                    if (sd.lasers.isEmpty() && sd.laserPoint != null && !sd.laserPoint.isEmpty()) {
+                        LaserDef ld0 = new LaserDef();
+                        ld0.point = sd.laserPoint; ld0.axis = sd.laserAxis; ld0.length = sd.laserLength; ld0.height = sd.laserHeight;
+                        sd.lasers.add(ld0);
+                    }
                     sc.stages.add(sd);
                 }
                 sc.stages.sort((a, b) -> Integer.compare(a.requiredRebirths, b.requiredRebirths));
