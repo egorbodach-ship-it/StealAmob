@@ -4529,24 +4529,27 @@ private boolean isBaseMob(Entity entity) {
         if (cp != null) for (String pt : s.collectorPoints) cp.remove(pt);
     }
     private void applyStage(String base, int rebirthCount) {
+        applyStage(base, rebirthCount, null);
+    }
+    private void applyStage(String base, int rebirthCount, Runnable afterPaste) {
         Stage2Config sc = stage2Configs.get(base);
-        if (sc == null || !sc.enabled) return;
+        if (sc == null || !sc.enabled) { if (afterPaste != null) Bukkit.getScheduler().runTask(this, afterPaste); return; }
         final StageDef target = getTargetStage(base, rebirthCount);
         final StageDef current = activeStageDef.get(base);
-        if (target == current) return;
+        if (target == current) { if (afterPaste != null) Bukkit.getScheduler().runTask(this, afterPaste); return; }
         if (current != null) removeStagePoints(base, current);
         if (target == null) {
             activeStageDef.remove(base);
             stage2Active.put(base, false);
             getLogger().info("[Stage2] base " + base + ": restoring original (rebirth=" + rebirthCount + ")");
-            pasteStage2Schematic(base, sc.emptySchematic, sc.pos1, sc.pos2, null, true);
+            pasteStage2Schematic(base, sc.emptySchematic, sc.pos1, sc.pos2, afterPaste, true);
             return;
         }
         activeStageDef.put(base, target);
         stage2Active.put(base, true);
         getLogger().info("[Stage2] base " + base + ": applying stage req=" + target.requiredRebirths + " schem=" + target.schematic + " (rebirth=" + rebirthCount + ")");
         addStagePoints(base, target);
-        pasteStage2Schematic(base, target.schematic, target.pos1, target.pos2, null);
+        pasteStage2Schematic(base, target.schematic, target.pos1, target.pos2, afterPaste);
     }
     private void restoreStage(String base) {
         Stage2Config sc = stage2Configs.get(base);
@@ -4585,6 +4588,7 @@ private boolean isBaseMob(Entity entity) {
         Location l2 = getLocationFromPoint(pos2);
         if (l1 == null || l2 == null || l1.getWorld() == null) {
             getLogger().warning("[Stage2] base " + base + ": invalid pos1/pos2");
+            if (afterMain != null) Bukkit.getScheduler().runTask(this, afterMain);
             return;
         }
         final World world = l1.getWorld();
@@ -4597,6 +4601,7 @@ private boolean isBaseMob(Entity entity) {
         final File file = resolveSchematicFile(schemName);
         if (file == null || !file.exists()) {
             getLogger().warning("[Stage2] base " + base + ": schematic file not found: " + schemName);
+            if (afterMain != null) Bukkit.getScheduler().runTask(this, afterMain);
             return;
         }
         Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
@@ -8456,9 +8461,10 @@ public List<String> getMobPoints(String baseName) {
                 if (hasSavedMobs) {
                     debugLog("[JOIN DEBUG] Восстанавливаем " + savedMobs.size() + " мобов...");
                     if (stage2Configs.containsKey(playerBase)) {
-                        applyStage(playerBase, getRebirthCount(p));
+                        applyStage(playerBase, getRebirthCount(p), () -> restorePlayerMobs(playerName));
+                    } else {
+                        restorePlayerMobs(playerName);
                     }
-                    restorePlayerMobs(playerName);
                 }
                 sendCooldownMessage(p, "§a✅ Добро пожаловать на базу!", lastCollectMessage);
             } else {
