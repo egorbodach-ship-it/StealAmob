@@ -342,28 +342,6 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         loadBases();
         cleanUpSavedMobs();
         loadMobsFromConfig();
-        // [FIX restart] Reconcile stage2 terrain on startup. After a restart the
-        // world still holds the previously pasted upgrade schematic, while state is
-        // reset (stage2Active=false). Restore the original (empty) schematic for every
-        // enabled base whose owner is not online & qualified, so bases don't stay
-        // upgraded until someone re-enters and leaves.
-        Bukkit.getScheduler().runTaskLater(this, () -> {
-            for (Map.Entry<String, Stage2Config> __e : stage2Configs.entrySet()) {
-                String __b = __e.getKey();
-                Stage2Config __sc = __e.getValue();
-                if (__sc == null || !__sc.enabled) continue;
-                String __owner = bases.get(__b);
-                Player __op = (__owner == null) ? null : Bukkit.getPlayerExact(__owner);
-                if (__op != null && getTargetStage(__b, getRebirthCount(__op)) != null) {
-                    applyStage(__b, getRebirthCount(__op));
-                } else {
-                    activeStageDef.remove(__b);
-                    stage2Active.put(__b, false);
-                    pasteStage2Schematic(__b, __sc.emptySchematic, __sc.pos1, __sc.pos2, null, true);
-                }
-            }
-            getLogger().info("[Stage2] startup terrain reconciliation done");
-        }, 80L);
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 cleanupAllDuplicateHolograms();
             }, 60L);
@@ -3633,17 +3611,6 @@ private boolean isBaseMob(Entity entity) {
             String targetCollectorPoint = savedMob.collectorPoint;
             MobType mobType = savedMob.mobType;
             if (!validMobPoints.contains(targetMobPoint)) {
-                // [FIX 2nd-floor] If this is a stage2 (upper-floor) point that isn't
-                // active yet, re-apply the owner's stage so the saved mob returns to its
-                // real slot instead of being relocated to a 1st-floor point.
-                if (isStage2MobPoint(playerBase, targetMobPoint)) {
-                    Player __owner = Bukkit.getPlayerExact(playerName);
-                    if (__owner != null) applyStage(playerBase, getRebirthCount(__owner));
-                    List<String> __vp = baseMobSpawnPoints.get(playerBase);
-                    if (__vp != null) validMobPoints = __vp;
-                }
-            }
-            if (!validMobPoints.contains(targetMobPoint)) {
                 targetMobPoint = null;
                 for (String point : validMobPoints) {
                     if (!occupied.contains(point)) {
@@ -4505,22 +4472,6 @@ private boolean isBaseMob(Entity entity) {
         }
         return false;
     }
-
-    // [FIX yaw] 0-based slot index of a stage2 mob point within the longest stage's
-    // mobPoints (slot order). Slots 0-3 = wall #1, slots 4-6 = wall #2. Geometry is
-    // identical for normal and mirrored bases (mirror is Z-only), so wall #1 faces
-    // -X (yaw 90) and wall #2 faces +X (yaw -90) for every base.
-    private int stage2SlotIndex(String base, String mobPoint) {
-        Stage2Config sc = stage2Configs.get(base);
-        if (sc == null || mobPoint == null) return -1;
-        List<String> longest = null;
-        for (StageDef sd : sc.stages) {
-            if (sd.mobPoints != null && (longest == null || sd.mobPoints.size() > longest.size())) {
-                longest = sd.mobPoints;
-            }
-        }
-        return (longest == null) ? -1 : longest.indexOf(mobPoint);
-    }
     private void removeStagePoints(String base, StageDef s) {
         List<String> mp = baseMobSpawnPoints.get(base);
         Set<String> occ = occupiedMobPoints.get(base);
@@ -5295,8 +5246,8 @@ private boolean isBaseMob(Entity entity) {
             }
         }
         if (isStage2MobPoint(base, mobPoint)) {
-            int __slot = stage2SlotIndex(base, mobPoint);
-            yaw = (__slot >= 0 && __slot < 4) ? 90.0f : -90.0f;
+            yaw += 180.0f;
+            if (yaw >= 180.0f) yaw -= 360.0f;
         }
         loc.setYaw(yaw);
         loc.setPitch(0.0f);
@@ -5665,8 +5616,8 @@ private boolean isBaseMob(Entity entity) {
             }
         }
         if (isStage2MobPoint(base, mobPoint)) {
-            int __slot = stage2SlotIndex(base, mobPoint);
-            yaw = (__slot >= 0 && __slot < 4) ? 90.0f : -90.0f;
+            yaw += 180.0f;
+            if (yaw >= 180.0f) yaw -= 360.0f;
         }
         loc.setYaw(yaw);
         loc.setPitch(0.0f);
