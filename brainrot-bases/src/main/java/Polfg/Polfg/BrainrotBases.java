@@ -4449,6 +4449,14 @@ private boolean isBaseMob(Entity entity) {
         if (cp != null) for (String pt : s.collectorPoints) if (pt != null && !pt.isEmpty() && !cp.contains(pt)) cp.add(pt);
         getLogger().info("[Stage2] points added for base " + base + " (+" + s.mobPoints.size() + " mob, +" + s.collectorPoints.size() + " col)");
     }
+    private boolean isStage2MobPoint(String base, String point) {
+        Stage2Config sc = stage2Configs.get(base);
+        if (sc == null || point == null) return false;
+        for (StageDef sd : sc.stages) {
+            if (sd.mobPoints != null && sd.mobPoints.contains(point)) return true;
+        }
+        return false;
+    }
     private void removeStagePoints(String base, StageDef s) {
         List<String> mp = baseMobSpawnPoints.get(base);
         Set<String> occ = occupiedMobPoints.get(base);
@@ -4473,7 +4481,8 @@ private boolean isBaseMob(Entity entity) {
         activeStageDef.put(base, target);
         stage2Active.put(base, true);
         getLogger().info("[Stage2] base " + base + ": applying stage req=" + target.requiredRebirths + " schem=" + target.schematic + " (rebirth=" + rebirthCount + ")");
-        pasteStage2Schematic(base, target.schematic, target.pos1, target.pos2, () -> addStagePoints(base, target));
+        addStagePoints(base, target);
+        pasteStage2Schematic(base, target.schematic, target.pos1, target.pos2, null);
     }
     private void restoreStage(String base) {
         Stage2Config sc = stage2Configs.get(base);
@@ -5183,6 +5192,10 @@ private boolean isBaseMob(Entity entity) {
                 }
             }
         }
+        if (isStage2MobPoint(base, mobPoint)) {
+            yaw += 180.0f;
+            if (yaw >= 180.0f) yaw -= 360.0f;
+        }
         loc.setYaw(yaw);
         loc.setPitch(0.0f);
         removeMobAtPoint(mobPoint);
@@ -5548,6 +5561,10 @@ private boolean isBaseMob(Entity entity) {
             } else {
                 yaw = (pointIndex >= 0 && pointIndex < 5) ? -90.0f : 90.0f;
             }
+        }
+        if (isStage2MobPoint(base, mobPoint)) {
+            yaw += 180.0f;
+            if (yaw >= 180.0f) yaw -= 360.0f;
         }
         loc.setYaw(yaw);
         loc.setPitch(0.0f);
@@ -7296,6 +7313,11 @@ private boolean isBaseMob(Entity entity) {
             else if (rebirthCount == 2) { lore.add(" §8• §fНачальные деньги: §6$25,000"); lore.add(" §8• §fМножитель: §bx1.6"); lore.add(" §8• §eПри закрытии: 90 секунд"); }
             else if (rebirthCount == 3) { lore.add(" §8• §fНачальные деньги: §6$50,000"); lore.add(" §8• §fМножитель: §bx1.8"); lore.add(" §8• §eПри закрытии: 100 секунд"); }
         }
+        if (nextRebirthLevel == 2) {
+            lore.add(" §8• §aБаза обновится до второго этажа (+1 слот для моба)");
+        } else if (nextRebirthLevel >= 3 && nextRebirthLevel <= 8) {
+            lore.add(" §8• §a+1 слот для моба на втором этаже");
+        }
         lore.add(" §8• §cВсе мобы на базе будут удалены!");
         lore.add("");
         double balance = getPlayerBalance(player);
@@ -7762,6 +7784,11 @@ private boolean isBaseMob(Entity entity) {
         double newMultiplier = getPlayerEarnMultiplier(player);
         String rebirthBaseName = findPlayerBase(player);
         if (rebirthBaseName != null) applyStage(rebirthBaseName, newRebirthCount);
+        if (newRebirthCount == 2) {
+            player.sendMessage("§a§l⚡ Ваша база обновилась до второго этажа §7(+1 слот для моба)");
+        } else if (newRebirthCount >= 3 && newRebirthCount <= 8) {
+            player.sendMessage("§a§l⚡ Второй этаж базы расширен §7(+1 слот для моба)");
+        }
         player.sendMessage("§6§l══════════════════════════════════");
         player.sendMessage("§a§l          ПЕРЕРОЖДЕНИЕ #" + newRebirthCount + " УСПЕШНО!");
         player.sendMessage("");
@@ -8326,6 +8353,9 @@ public List<String> getMobPoints(String baseName) {
                 if (occupied != null) occupied.clear();
                 if (hasSavedMobs) {
                     debugLog("[JOIN DEBUG] Восстанавливаем " + savedMobs.size() + " мобов...");
+                    if (stage2Configs.containsKey(playerBase)) {
+                        applyStage(playerBase, getRebirthCount(p));
+                    }
                     restorePlayerMobs(playerName);
                 }
                 sendCooldownMessage(p, "§a✅ Добро пожаловать на базу!", lastCollectMessage);
