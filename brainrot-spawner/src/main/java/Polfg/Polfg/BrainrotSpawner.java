@@ -1321,6 +1321,20 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                     } else {
                         finalMob.teleport(targetLoc);
                     }
+                } else if (mobData == MobData.ENDER_DRAGON) {
+                    if (finalMob instanceof EnderDragon dragon) {
+                        try { if (dragon.getPhase() != EnderDragon.Phase.HOVER) dragon.setPhase(EnderDragon.Phase.HOVER); } catch (Throwable ignored) {}
+                        try { dragon.setVelocity(new Vector(0, 0, 0)); } catch (Throwable ignored) {}
+                    }
+                    boolean moved;
+                    try { moved = finalMob.teleport(targetLoc); } catch (Throwable t) { moved = false; }
+                    if (!moved || finalMob.getLocation().distanceSquared(targetLoc) > 0.05) {
+                        String dim = finalMob.getWorld().getKey().toString();
+                        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), String.format(Locale.US,
+                                "execute in %s run minecraft:tp %s %.3f %.3f %.3f %.1f 0",
+                                dim, finalMob.getUniqueId(),
+                                targetLoc.getX(), targetLoc.getY(), targetLoc.getZ(), targetLoc.getYaw()));
+                    }
                 } else {
                     finalMob.teleport(targetLoc);
                 }
