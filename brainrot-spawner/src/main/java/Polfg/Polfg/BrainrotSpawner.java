@@ -159,11 +159,13 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     }
 
     private enum Rarity {
-        COMMON("Обычный", "§a", 50.0),
+        COMMON("Обычный", "§a", 55.0),
         RARE("Редкий", "§9", 25.0),
-        EPIC("Эпический", "§5", 15.0),
-        LEGENDARY("Легендарный", "§6§l", 4),
-        MYTHICAL("✦ Мифический ✦", "§d§l", 0.2),
+        EPIC("Эпический", "§5", 13.0),
+        LEGENDARY("Легендарный", "§6§l", 5.0),
+        MYTHICAL("✦ Мифический ✦", "§d§l", 1.89),
+        BRAINROT_GOD("✧ Божественный ✧", "§b§l", 0.10),
+        SECRET("☠ Секретный ☠", "§8§l", 0.01),
         EVENT("Ивентовый", "§2§l", 0.0);
 
         final String displayName;
@@ -246,16 +248,18 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         AXOLOTL("Аксолотль", EntityType.AXOLOTL, 3500000, 12000, 0.5, Rarity.MYTHICAL),
         WARDEN("Варден", EntityType.WARDEN, 5000000, 15000, 0.3, Rarity.MYTHICAL),
 
+        ENDER_DRAGON("Эндер Дракон", EntityType.ENDER_DRAGON, 250_000_000_000L, 1_000_000_000L, 100, Rarity.SECRET),
+
         ROT_WALKER("Гнилоход", EntityType.ITEM_DISPLAY, 9999999, 50000, 0.0, Rarity.EVENT);
 
         final String displayName;
         final EntityType entityType;
-        final int price;
-        final int incomePerSecond;
+        final long price;
+        final long incomePerSecond;
         final double weight;
         final Rarity rarity;
 
-        MobData(String displayName, EntityType entityType, int price, int incomePerSecond, double weight, Rarity rarity) {
+        MobData(String displayName, EntityType entityType, long price, long incomePerSecond, double weight, Rarity rarity) {
             this.displayName = displayName;
             this.entityType = entityType;
             this.price = price;
@@ -288,6 +292,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 case FROG -> 0.55; case CREEPER -> 1.7; case GLOW_SQUID -> 0.8;
                 case WANDERING_TRADER -> 1.95; case ELDER_GUARDIAN -> 1.9975;
                 case ROT_WALKER -> 2.0;
+                case ENDER_DRAGON -> 2.6;
                 default -> 1.0;
             };
         }
@@ -610,15 +615,27 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
 
     private MobData selectRandomMob() {
         Rarity selectedRarity = selectRarity();
-        return selectMobFromRarity(selectedRarity);
+        MobData mob = selectMobFromRarity(selectedRarity);
+        return mob != null ? mob : MobData.CHICKEN;
+    }
+
+    private boolean hasMobs(Rarity rarity) {
+        for (MobData mob : MobData.values()) {
+            if (mob.rarity == rarity && mob.weight > 0) return true;
+        }
+        return false;
     }
 
     private Rarity selectRarity() {
         double totalChance = 0;
-        for (Rarity r : Rarity.values()) totalChance += r.chance;
+        for (Rarity r : Rarity.values()) {
+            if (r.chance > 0 && hasMobs(r)) totalChance += r.chance;
+        }
+        if (totalChance <= 0) return Rarity.COMMON;
         double rand = random.nextDouble() * totalChance;
         double cumulative = 0;
         for (Rarity r : Rarity.values()) {
+            if (r.chance <= 0 || !hasMobs(r)) continue;
             cumulative += r.chance;
             if (rand <= cumulative) return r;
         }
@@ -629,12 +646,12 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         List<MobData> mobsInRarity = new ArrayList<>();
         double totalWeight = 0;
         for (MobData mob : MobData.values()) {
-            if (mob.rarity == rarity) {
+            if (mob.rarity == rarity && mob.weight > 0) {
                 mobsInRarity.add(mob);
                 totalWeight += mob.weight;
             }
         }
-        if (mobsInRarity.isEmpty()) return MobData.CHICKEN;
+        if (mobsInRarity.isEmpty() || totalWeight <= 0) return null;
         double rand = random.nextDouble() * totalWeight;
         double cumulative = 0;
         for (MobData mob : mobsInRarity) {
@@ -680,14 +697,22 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             namePrefix = "§d✦ ";
             priceSuffix = "§d";
         }
+        if (data.rarity == Rarity.BRAINROT_GOD) {
+            namePrefix = "§b✧ ";
+            priceSuffix = "§b";
+        }
+        if (data.rarity == Rarity.SECRET) {
+            namePrefix = "§8☠ ";
+            priceSuffix = "§8";
+        }
         if (data.rarity == Rarity.EVENT) {
             namePrefix = "§2☣ ";
             priceSuffix = "§2";
         }
         double mult = (baseMutation != null ? baseMutation.incomeMultiplier : 1.0);
         if (snowy) mult *= Mutation.SNOWY.incomeMultiplier;
-        int actualIncome = (int) Math.round(data.incomePerSecond * mult);
-        String nameLine = namePrefix + "§f" + data.displayName + (data.rarity == Rarity.MYTHICAL ? " §d✦" : "");
+        long actualIncome = Math.round(data.incomePerSecond * mult);
+        String nameLine = namePrefix + "§f" + data.displayName + (data.rarity == Rarity.MYTHICAL ? " §d✦" : data.rarity == Rarity.BRAINROT_GOD ? " §b✧" : data.rarity == Rarity.SECRET ? " §8☠" : "");
         String rarityLine = data.rarity.format + data.rarity.displayName;
         String incomeLine = "§a+" + formatNumber(actualIncome) + "§2$§a/сек";
         String priceLine = priceSuffix + formatNumber(data.price) + "$";
@@ -716,7 +741,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         ArmorStand rainbowTag = (rainbowIndex < tags.size()) ? tags.get(rainbowIndex) : null;
         ArmorStand incomeTag = (incomeIndex < tags.size()) ? tags.get(incomeIndex) : null;
         double mult = Mutation.RAINBOW.incomeMultiplier * (snowy ? Mutation.SNOWY.incomeMultiplier : 1.0);
-        int actualIncome = (int) Math.round(data.incomePerSecond * mult);
+        long actualIncome = Math.round(data.incomePerSecond * mult);
         BukkitRunnable animTask = new BukkitRunnable() {
             int tick = 0;
             @Override
@@ -934,6 +959,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         if (selectedMob == null) {
             if (isMythicalGuaranteed(spawnerId)) {
                 selectedMob = selectMobFromRarity(Rarity.MYTHICAL);
+                if (selectedMob == null) selectedMob = selectRandomMob();
                 resetMythicalTimer(spawnerId);
                 for (Player p : Bukkit.getOnlinePlayers()) {
                     if (p.getWorld().getName().equals(config.getWorldName())) {
@@ -943,6 +969,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 }
             } else if (isLegendaryGuaranteed(spawnerId)) {
                 selectedMob = selectMobFromRarity(Rarity.LEGENDARY);
+                if (selectedMob == null) selectedMob = selectRandomMob();
                 resetLegendaryTimer(spawnerId);
                 for (Player p : Bukkit.getOnlinePlayers()) {
                     if (p.getWorld().getName().equals(config.getWorldName())) {
@@ -1154,7 +1181,15 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     }
 
     private void spawnRarityEffects(Entity mob, MobData data) {
-        if (data.rarity == Rarity.MYTHICAL) {
+        if (data.rarity == Rarity.SECRET) {
+            mob.getWorld().spawnParticle(Particle.FIREWORK, mob.getLocation().add(0, 1, 0), 100, 0.9, 0.9, 0.9, 0.2);
+            mob.getWorld().spawnParticle(Particle.SOUL_FIRE_FLAME, mob.getLocation().add(0, 1.5, 0), 60, 0.6, 0.8, 0.6, 0.05);
+            mob.getWorld().playSound(mob.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 1.0f, 1.4f);
+        } else if (data.rarity == Rarity.BRAINROT_GOD) {
+            mob.getWorld().spawnParticle(Particle.FIREWORK, mob.getLocation().add(0, 1, 0), 70, 0.8, 0.8, 0.8, 0.18);
+            mob.getWorld().spawnParticle(Particle.END_ROD, mob.getLocation().add(0, 1.5, 0), 45, 0.6, 0.6, 0.6, 0.12);
+            mob.getWorld().playSound(mob.getLocation(), Sound.ENTITY_WITHER_SPAWN, 0.7f, 1.6f);
+        } else if (data.rarity == Rarity.MYTHICAL) {
             mob.getWorld().spawnParticle(Particle.FIREWORK, mob.getLocation().add(0, 1, 0), 50, 0.7, 0.7, 0.7, 0.15);
             mob.getWorld().spawnParticle(Particle.END_ROD, mob.getLocation().add(0, 1.5, 0), 30, 0.5, 0.5, 0.5, 0.1);
             mob.getWorld().playSound(mob.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1.0f, 1.2f);
@@ -1207,6 +1242,15 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             else if (data == MobData.WARDEN && mob instanceof Warden warden) { warden.setAware(false); for (Player p : warden.getWorld().getPlayers()) warden.setAnger(p, 0); mob.addScoreboardTag("NO_WARDEN_EFFECTS"); }
             else if (data == MobData.AXOLOTL && mob instanceof Axolotl axolotl) { axolotl.setVariant(Axolotl.Variant.BLUE); }
             else if (data == MobData.FROG && mob instanceof Frog frog) { frog.setVariant(Frog.Variant.WARM); }
+            else if (data == MobData.ENDER_DRAGON && mob instanceof EnderDragon dragon) {
+                try { dragon.setPhase(EnderDragon.Phase.HOVER); } catch (Throwable ignored) {}
+                try { if (dragon.getBossBar() != null) dragon.getBossBar().setVisible(false); } catch (Throwable ignored) {}
+                try {
+                    org.bukkit.attribute.AttributeInstance scale = living.getAttribute(org.bukkit.attribute.Attribute.SCALE);
+                    if (scale != null) scale.setBaseValue(0.25);
+                } catch (Throwable ignored) {}
+                mob.addScoreboardTag("NO_DRAGON_AI");
+            }
             mob.setTicksLived(1);
             mob.addScoreboardTag("NO_DESPAWN");
             mob.addScoreboardTag("MOB_" + data.name());
@@ -1436,9 +1480,11 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         };
     }
 
-    private String formatNumber(int num) {
-        if (num >= 1_000_000) return String.format("%.1fМ", num / 1_000_000.0).replace(",", ".");
-        if (num >= 1_000) return String.format("%.1fК", num / 1_000.0).replace(",", ".");
+    private String formatNumber(long num) {
+        if (num >= 1_000_000_000_000L) return String.format("%.1fТ", num / 1_000_000_000_000.0).replace(",", ".");
+        if (num >= 1_000_000_000L) return String.format("%.1fБ", num / 1_000_000_000.0).replace(",", ".");
+        if (num >= 1_000_000L) return String.format("%.1fМ", num / 1_000_000.0).replace(",", ".");
+        if (num >= 1_000L) return String.format("%.1fК", num / 1_000.0).replace(",", ".");
         return String.valueOf(num);
     }
 
@@ -1532,6 +1578,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     public void onPlayerInteract(PlayerInteractAtEntityEvent event) {
         if (event.getHand() != EquipmentSlot.HAND) return;
         Entity entity = event.getRightClicked();
+        if (entity instanceof ComplexEntityPart part) entity = part.getParent();
         if (isBaseMobEntity(entity)) return;
         if (entity.getScoreboardTags().contains("SPONGE_HITBOX")) {
             boolean found = false;
@@ -1575,7 +1622,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 event.setCancelled(true);
                 return;
             }
-            int rebuyPrice = (int) (data.price * 1.5);
+            long rebuyPrice = (long) (data.price * 1.5);
             if (economy.getBalance(player) < rebuyPrice) {
                 player.sendMessage("§c✖ Для перекупа нужно: §6$" + formatNumber(rebuyPrice) + " §c(+50%)");
                 player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1f, 1f);
@@ -1615,6 +1662,8 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         Mutation mutation = mobMutations.get(entity);
         String mutationPrefix = (mutation != null && mutation != Mutation.NONE) ? mutation.format + mutation.displayName + " " : "";
         String msg = switch (data.rarity) {
+            case SECRET -> "§8☠ §fВы купили §8" + mutationPrefix + data.displayName + "§f за §6$" + formatNumber(data.price) + "§f!";
+            case BRAINROT_GOD -> "§b✧ §fВы купили §b" + mutationPrefix + data.displayName + "§f за §6$" + formatNumber(data.price) + "§f!";
             case MYTHICAL -> "§d✦ §fВы купили §d" + mutationPrefix + data.displayName + "§f за §6$" + formatNumber(data.price) + "§f!";
             case LEGENDARY -> "§6✔ §fВы купили §6" + mutationPrefix + data.displayName + "§f за §6$" + formatNumber(data.price) + "§f!";
             case EPIC -> "§5✔ §fВы купили §5" + mutationPrefix + data.displayName + "§f за §6$" + formatNumber(data.price) + "§f!";
@@ -1623,7 +1672,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             default -> "§a✔ §fВы купили §a" + mutationPrefix + data.displayName + "§f за §6$" + formatNumber(data.price) + "§f!";
         };
         player.sendMessage(msg);
-        player.playSound(player.getLocation(), data.rarity == Rarity.MYTHICAL || data.rarity == Rarity.EVENT ? Sound.UI_TOAST_CHALLENGE_COMPLETE : Sound.ENTITY_PLAYER_LEVELUP, 1f, 1.5f);
+        player.playSound(player.getLocation(), data.rarity == Rarity.MYTHICAL || data.rarity == Rarity.BRAINROT_GOD || data.rarity == Rarity.SECRET || data.rarity == Rarity.EVENT ? Sound.UI_TOAST_CHALLENGE_COMPLETE : Sound.ENTITY_PLAYER_LEVELUP, 1f, 1.5f);
         sendMobToBase(player, entity, data);
         event.setCancelled(true);
     }
@@ -1879,7 +1928,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             buyer.sendMessage("§a✔ §f" + data.displayName + " §aдоставлен на базу!");
             buyer.playSound(buyer.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1f, 1f);
             mob.getWorld().spawnParticle(Particle.TOTEM_OF_UNDYING, loc, 30, 0.5, 0.5, 0.5, 0.3);
-            if (data.rarity == Rarity.MYTHICAL) {
+            if (data.rarity == Rarity.MYTHICAL || data.rarity == Rarity.BRAINROT_GOD || data.rarity == Rarity.SECRET) {
                 mob.getWorld().spawnParticle(Particle.END_ROD, loc, 50, 0.7, 0.7, 0.7, 0.2);
                 mob.getWorld().playSound(loc, Sound.UI_TOAST_CHALLENGE_COMPLETE, 0.7f, 1.2f);
             }
@@ -2080,13 +2129,13 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
 
     public static BrainrotSpawner getInstance() { return instance; }
 
-    public int getMobIncome(Entity entity) {
+    public long getMobIncome(Entity entity) {
         MobData data = mobDataMap.get(entity);
         Mutation base = mobMutations.get(entity);
         if (data == null) return 2;
         double mult = (base != null ? base.incomeMultiplier : 1.0);
         if (entity.getScoreboardTags().contains("MUTATION_SNOWY")) mult *= Mutation.SNOWY.incomeMultiplier;
-        return (int) Math.round(data.incomePerSecond * mult);
+        return Math.round(data.incomePerSecond * mult);
     }
 
     public String getMobName(Entity entity) {

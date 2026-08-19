@@ -1,0 +1,13 @@
+// Каркас сборки мода Brainrot (NeoForge 1.21.4).
+// Версии плагинов и NeoForge вынесены в gradle.properties — правь там.
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven {
+            name = 'NeoForged'
+            url = 'https://maven.neoforged.net/releases'
+        }
+    }
+}
+
+rootProject.name = 'brainrot'
