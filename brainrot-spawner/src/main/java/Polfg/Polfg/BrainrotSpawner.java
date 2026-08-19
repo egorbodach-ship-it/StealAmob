@@ -1019,6 +1019,10 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         }
         try {
             Entity mob = spawnLoc.getWorld().spawnEntity(spawnLoc, selectedMob.entityType);
+            if (selectedMob == MobData.ENDER_DRAGON) {
+                getLogger().info("[DRAGON] spawn ok: uuid=" + mob.getUniqueId() + " type=" + mob.getType()
+                        + " at " + String.format(Locale.US, "%.1f/%.1f/%.1f", spawnLoc.getX(), spawnLoc.getY(), spawnLoc.getZ()));
+            }
             setupMob(mob, selectedMob);
             double nameTagHeight = selectedMob.getEntityHeight() + 0.3;
             mobHoloHeights.put(mob, nameTagHeight);
@@ -1267,11 +1271,23 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         final MobData mobData = mobDataMap.get(finalMob);
         final double savedNameTagHeight = nameTagHeight;
         final Location initialLoc = spawnLoc.clone();
+        if (mobData == MobData.ENDER_DRAGON || finalMob.getType() == EntityType.ENDER_DRAGON) {
+            getLogger().info("[DRAGON] movement task started: mobData=" + mobData + " speed=" + speed + " dir=" + direction);
+        }
         BukkitRunnable movementTask = new BukkitRunnable() {
             private double traveledDistance = 0;
             private long tick = 0;
             @Override
             public void run() {
+                try {
+                    tickMove();
+                } catch (Throwable t) {
+                    getLogger().warning("[BRAINROT] Ошибка движения моба " + mobData + ": " + t);
+                    try { cancel(); } catch (Throwable ignored) {}
+                    movementTasks.remove(finalMob);
+                }
+            }
+            private void tickMove() {
                 tick++;
                 boolean snowNow = isSnowy(finalMob);
                 boolean snowOld = mobSnowyCache.getOrDefault(finalMob, false);
@@ -1334,6 +1350,13 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                                 "execute in %s run minecraft:tp %s %.3f %.3f %.3f %.1f 0",
                                 dim, finalMob.getUniqueId(),
                                 targetLoc.getX(), targetLoc.getY(), targetLoc.getZ(), targetLoc.getYaw()));
+                    }
+                    if (tick == 1 || tick == 20 || tick == 60) {
+                        Location cur = finalMob.getLocation();
+                        getLogger().info(String.format(Locale.US,
+                                "[DRAGON] tick=%d moved=%s target=%.2f/%.2f/%.2f actual=%.2f/%.2f/%.2f",
+                                tick, moved, targetLoc.getX(), targetLoc.getY(), targetLoc.getZ(),
+                                cur.getX(), cur.getY(), cur.getZ()));
                     }
                 } else {
                     finalMob.teleport(targetLoc);
