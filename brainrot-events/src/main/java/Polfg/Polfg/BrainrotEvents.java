@@ -349,7 +349,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         }
         if (activeEvent != null) stopEvent(true);
 
-        World world = resolveWorld();
+        World world = resolveWorld(feedback);
         if (world == null) {
             if (feedback != null) feedback.sendMessage("§cНе найден мир для ивента (events.world в конфиге).");
             return false;
@@ -606,9 +606,29 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         double[] box = boundsFromWorldGuard(world);
         if (box == null) box = boundsFromConveyors(world);
         if (box == null) box = boundsFromConfig();
-        if (box != null) regionBounds = box;
-        return box;
+        if (box != null) { regionBounds = box; return box; }
+        // Последний шанс: сыпем вокруг игроков, чтобы ивент не был пустым (не кэшируем — игроки ходят).
+        double minX = Double.MAX_VALUE, minZ = Double.MAX_VALUE, maxX = -Double.MAX_VALUE, maxZ = -Double.MAX_VALUE;
+        int used = 0;
+        for (Player p : world.getPlayers()) {
+            Location l = p.getLocation();
+            minX = Math.min(minX, l.getX() - 24); maxX = Math.max(maxX, l.getX() + 24);
+            minZ = Math.min(minZ, l.getZ() - 24); maxZ = Math.max(maxZ, l.getZ() + 24);
+            used++;
+        }
+        if (used == 0) {
+            if (!regionWarned) {
+                regionWarned = true;
+                getLogger().warning("Не удалось определить область метеоритов: нет WorldGuard-региона '"
+                        + regionName + "', нет конвейеров в мире " + world.getName()
+                        + ", нет ручного бокса в events.region.min-x/max-x и нет игроков.");
+            }
+            return null;
+        }
+        return new double[]{minX, minZ, maxX, maxZ};
     }
+
+    private boolean regionWarned = false;
 
     private double[] boundsFromWorldGuard(World world) {
         if (regionName == null || regionName.isEmpty()) return null;
@@ -659,14 +679,33 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 Math.max(manualMinX, manualMaxX), Math.max(manualMinZ, manualMaxZ)};
     }
     private World resolveWorld() {
+        return resolveWorld(null);
+    }
+
+    /**
+     * Мир ивента. Порядок: events.world из конфига -> мир того, кто запустил команду ->
+     * мир конвейеров спавнера -> мир, где больше всего игроков -> первый загруженный.
+     * Важно: раньше сразу брался первый мир, из-за чего ивент уезжал в другой мир,
+     * и игрок не видел ни босс-бара, ни дождя, ни метеоритов.
+     */
+    private World resolveWorld(CommandSender starter) {
         if (activeWorld != null) return activeWorld;
         if (eventsWorldName != null && !eventsWorldName.isEmpty()) {
             World w = Bukkit.getWorld(eventsWorldName);
             if (w != null) return w;
+            getLogger().warning("Мир '" + eventsWorldName + "' из events.world не найден.");
         }
+        if (starter instanceof Player p) return p.getWorld();
         for (Location loc : getConveyorPoints()) {
             if (loc != null && loc.getWorld() != null) return loc.getWorld();
         }
+        World best = null;
+        int bestCount = -1;
+        for (World w : Bukkit.getWorlds()) {
+            int c = w.getPlayers().size();
+            if (c > bestCount) { bestCount = c; best = w; }
+        }
+        if (best != null) return best;
         return Bukkit.getWorlds().isEmpty() ? null : Bukkit.getWorlds().get(0);
     }
 
@@ -894,10 +933,19 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                     sender.sendMessage("§aИвент «" + name + "» остановлен.");
                 }
                 case "status" -> {
+                    World w = activeWorld != null ? activeWorld : resolveWorld(sender);
+                    sender.sendMessage("§7Мир ивентов: §f" + (w != null ? w.getName() : "?")
+                            + " §7(events.world = §f" + (eventsWorldName.isEmpty() ? "авто" : eventsWorldName) + "§7)");
+                    sender.sendMessage("§7Спавнер подключён: " + (getSpawnerPlugin() != null ? "§aда" : "§cнет")
+                            + " §7| мобов на конвейере: §f" + getSpawnerMobs().size());
+                    if (w != null) {
+                        double[] box = getRegionBounds(w);
+                        sender.sendMessage("§7Область метеоритов: §f" + (box == null ? "не определена"
+                                : String.format(Locale.US, "%.0f,%.0f → %.0f,%.0f", box[0], box[1], box[2], box[3])));
+                    }
                     if (activeEvent == null) { sender.sendMessage("§7Активного ивента нет."); return true; }
                     int left = (int) Math.max(0, Math.ceil((eventEndMillis - System.currentTimeMillis()) / 1000.0));
-                    sender.sendMessage("§eИдёт: " + activeEvent.title + " §7(осталось " + formatTime(left)
-                            + ", мир " + (activeWorld != null ? activeWorld.getName() : "?") + ")");
+                    sender.sendMessage("§eИдёт: " + activeEvent.title + " §7(осталось " + formatTime(left) + ")");
                     if (activeEvent == EventType.METEOR_SHOWER) {
                         sender.sendMessage("§7Метеоритов в воздухе: " + activeMeteors.size());
                     }
