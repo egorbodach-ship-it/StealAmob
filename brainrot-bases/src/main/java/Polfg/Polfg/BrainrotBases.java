@@ -6866,6 +6866,15 @@ private boolean isBaseMob(Entity entity) {
                     world.spawnParticle(Particle.LARGE_SMOKE, p.clone().add(0, 0.3, 0), 1, 0.2, 0.1, 0.2, 0.01);
                 }
             }
+            case EXPLOSIVE -> {
+                if (tick % 4 == 0) {
+                    world.spawnParticle(Particle.DUST, p, 3, 0.28, 0.3, 0.28, 0,
+                            new Particle.DustOptions(org.bukkit.Color.fromRGB(60, 220, 90), 1.0f));
+                }
+                if (tick % 12 == 0) {
+                    world.spawnParticle(Particle.EXPLOSION, p.clone().add(0, 0.3, 0), 1, 0.15, 0.1, 0.15, 0.0);
+                }
+            }
             case RAINBOW -> {
                 if (tick % 2 == 0) {
                     org.bukkit.Color[] colors = {
@@ -6951,6 +6960,15 @@ private boolean isBaseMob(Entity entity) {
                     world.spawnParticle(Particle.LARGE_SMOKE, p.clone().add(0, 0.3, 0), 1, 0.2, 0.1, 0.2, 0.01);
                 }
             }
+            case EXPLOSIVE -> {
+                if (tick % 4 == 0) {
+                    world.spawnParticle(Particle.DUST, p, 3, 0.28, 0.3, 0.28, 0,
+                            new Particle.DustOptions(org.bukkit.Color.fromRGB(60, 220, 90), 1.0f));
+                }
+                if (tick % 12 == 0) {
+                    world.spawnParticle(Particle.EXPLOSION, p.clone().add(0, 0.3, 0), 1, 0.15, 0.1, 0.15, 0.0);
+                }
+            }
             case RAINBOW -> {
                 if (tick % 2 == 0) {
                     org.bukkit.Color[] colors = {
@@ -6962,6 +6980,7 @@ private boolean isBaseMob(Entity entity) {
                             new Particle.DustOptions(c, 1.0f));
                 }
             }
+            default -> {}
         }
     }
     private void removeMobHologram(Entity mob) {

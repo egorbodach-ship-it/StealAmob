@@ -159,7 +159,8 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         // Ивентовые (chance = 0 -> никогда не выпадают при спавне, выдаются извне).
         SNOWY("Снежный", "§b", 5.0, 0),
         ELECTRIC("Электрический", "§e", 3.0, 0),
-        METEOR("Метеоритный", "§c", 4.0, 0);
+        METEOR("Метеоритный", "§c", 4.0, 0),
+        EXPLOSIVE("Взрывной", "§a", 3.5, 0);
 
         final String displayName;
         final String format;
@@ -851,9 +852,9 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
 
     // Мутации, которые стакаются с базовой (выдаются ивентами, а не при спавне).
     private static final List<Mutation> STACKABLE_MUTATIONS =
-            List.of(Mutation.SNOWY, Mutation.ELECTRIC, Mutation.METEOR);
+            List.of(Mutation.SNOWY, Mutation.ELECTRIC, Mutation.METEOR, Mutation.EXPLOSIVE);
 
-    /** Порядок фиксирован (Снежный, Электрический, Метеоритный) — от него зависит порядок строк нейм-тега. */
+    /** Порядок фиксирован (Снежный, Электрический, Метеоритный, Взрывной) — от него зависит порядок строк нейм-тега. */
     private List<Mutation> getExtraMutations(Entity mob) {
         if (mob == null) return List.of();
         Set<String> tags = mob.getScoreboardTags();
@@ -902,6 +903,13 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                     mob.getWorld().spawnParticle(Particle.LAVA, p, 1, 0.2, 0.2, 0.2, 0.0);
                     mob.getWorld().spawnParticle(Particle.LARGE_SMOKE, p.clone().add(0, 0.3, 0), 1, 0.2, 0.1, 0.2, 0.01);
                 }
+            }
+            case EXPLOSIVE -> {
+                if (tick % 4 == 0)
+                    mob.getWorld().spawnParticle(Particle.DUST, p, 3, 0.28, 0.3, 0.28, 0,
+                            new Particle.DustOptions(Color.fromRGB(60, 220, 90), 1.0f));
+                if (tick % 12 == 0)
+                    mob.getWorld().spawnParticle(Particle.EXPLOSION, p.clone().add(0, 0.3, 0), 1, 0.15, 0.1, 0.15, 0.0);
             }
             case RAINBOW -> {
                 if (tick % 2 == 0) {

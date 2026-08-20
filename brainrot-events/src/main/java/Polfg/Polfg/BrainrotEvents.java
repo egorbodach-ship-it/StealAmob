@@ -14,25 +14,32 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.entity.Creeper;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Fireball;
 import org.bukkit.entity.LargeFireball;
 import org.bukkit.entity.LightningStrike;
+import org.bukkit.entity.LivingEntity;
+import org.bukkit.entity.Mob;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockIgniteEvent;
+import org.bukkit.event.entity.CreeperPowerEvent;
 import org.bukkit.event.entity.EntityCombustByEntityEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.entity.EntityTargetEvent;
 import org.bukkit.event.entity.ExplosionPrimeEvent;
 import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.weather.LightningStrikeEvent;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
@@ -51,13 +58,17 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * BrainrotEvents — фоновая музыка + два погодных ивента.
+ * BrainrotEvents — фоновая музыка + три ивента.
  *
  * Ивенты:
  *  • Плохая Погода — босс-бар на время ивента, дождь/гроза, молнии бьют мобов
  *    на конвейере и навешивают мутацию «Электрический». Урон от молний отключён.
  *  • Метеоритный Дождь — босс-бар, по региону спавна падают фаерболы без урона
  *    и без разрушений; попадание по мобу даёт мутацию «Метеоритный».
+ *  • Крипер Пати — босс-бар, вдоль двух линий выставляются неуязвимые криперы,
+ *    они синхронно прыгают, а иногда один бежит к мобу на конвейере и «взрывается»
+ *    (косметика, без урона и грифинга) — моб получает мутацию «Взрывной».
+ *    Реже вместо моба крипер идёт к ближайшему игроку и отбрасывает его без урона.
  *
  * Сами мутации живут в BrainrotSpawner (стакаются с базовой), сюда они не копируются:
  * плагин дергает публичный API спавнера через рефлексию, поэтому жёсткой зависимости нет.
@@ -79,7 +90,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     // ===== Ивенты =====
     private enum EventType {
         BAD_WEATHER("badweather", "Плохая Погода", "§9§l", BarColor.BLUE),
-        METEOR_SHOWER("meteor", "Метеоритный Дождь", "§c§l", BarColor.RED);
+        METEOR_SHOWER("meteor", "Метеоритный Дождь", "§c§l", BarColor.RED),
+        CREEPER_PARTY("creeper", "Крипер Пати", "§a§l", BarColor.GREEN);
 
         final String key;
         final String title;
@@ -96,10 +108,12 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             for (EventType t : values()) if (t.key.equals(k) || t.name().toLowerCase(Locale.ROOT).equals(k)) return t;
             if (k.startsWith("плох") || k.startsWith("weather") || k.startsWith("storm")) return BAD_WEATHER;
             if (k.startsWith("метео") || k.startsWith("meteor")) return METEOR_SHOWER;
+            if (k.startsWith("крип") || k.startsWith("creep") || k.startsWith("party") || k.startsWith("пати")) return CREEPER_PARTY;
             return null;
         }
     }
     private static final String METEOR_TAG = "BRAINROT_METEOR";
+    private static final String PARTY_CREEPER_TAG = "BRAINROT_PARTY_CREEPER";
     private final Random random = new Random();
 
     private EventType activeEvent;
@@ -113,6 +127,14 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private BukkitTask autoTask;
     private final Set<Entity> activeMeteors = new HashSet<>();
     private boolean weatherRestore = false;
+
+    // Крипер Пати
+    private final List<Entity> partyCreepers = new ArrayList<>();
+    private final List<Location> partyCreeperSpots = new ArrayList<>();
+    private final Map<Entity, BukkitTask> creeperCharges = new HashMap<>();
+    private final Set<UUID> knockbackGrace = new HashSet<>();
+    private BukkitTask creeperJumpTask;
+    private BukkitTask creeperRefillTask;
 
     // Конфиг ивентов
     private String eventsWorldName = "";
@@ -129,6 +151,25 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private int meteorPerWave = 2;
     private double meteorSpawnHeight = 28;
     private double meteorHitRadius = 2.5;
+    private boolean creeperEnabled = true;
+    private int creeperDuration = 180;
+    private int creeperLineY = 46;
+    private int creeperMinX = -58;
+    private int creeperMaxX = 21;
+    private int creeperLine1Z = 71;
+    private int creeperLine2Z = 59;
+    private int creeperStep = 3;
+    private int creeperJumpInterval = 40;
+    private double creeperJumpPower = 0.42;
+    private int creeperChargeInterval = 50;
+    private double creeperChargeChance = 0.45;
+    private double creeperPlayerChance = 0.15;
+    private int creeperMaxCharges = 3;
+    private double creeperWalkSpeed = 0.26;
+    private int creeperChargeTimeout = 160;
+    private double creeperHitRadius = 2.0;
+    private double creeperPlayerKnockback = 1.35;
+    private int creeperRespawnDelay = 60;
     private String regionName = "spawn";
     private double regionPadding = 8;
     private double manualMinX = 0, manualMinZ = 0, manualMaxX = 0, manualMaxZ = 0;
@@ -162,7 +203,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             for (Player p : Bukkit.getOnlinePlayers()) startPlayerLoop(p);
         }
         startAutoScheduler();
-        getLogger().info("BrainrotEvents включён. Трек: " + soundKey + ", ивенты: Плохая Погода / Метеоритный Дождь");
+        getLogger().info("BrainrotEvents включён. Трек: " + soundKey
+                + ", ивенты: Плохая Погода / Метеоритный Дождь / Крипер Пати");
     }
 
     @Override
@@ -224,6 +266,25 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         changed |= def("events.meteor-shower.fireballs-per-wave", 2);
         changed |= def("events.meteor-shower.spawn-height", 28);
         changed |= def("events.meteor-shower.hit-radius", 2.5);
+        changed |= def("events.creeper-party.enabled", true);
+        changed |= def("events.creeper-party.duration-seconds", 180);
+        changed |= def("events.creeper-party.line-y", 46);
+        changed |= def("events.creeper-party.min-x", -58);
+        changed |= def("events.creeper-party.max-x", 21);
+        changed |= def("events.creeper-party.line1-z", 71);
+        changed |= def("events.creeper-party.line2-z", 59);
+        changed |= def("events.creeper-party.step", 3);
+        changed |= def("events.creeper-party.jump-interval-ticks", 40);
+        changed |= def("events.creeper-party.jump-power", 0.42);
+        changed |= def("events.creeper-party.charge-interval-ticks", 50);
+        changed |= def("events.creeper-party.charge-chance", 0.45);
+        changed |= def("events.creeper-party.player-target-chance", 0.15);
+        changed |= def("events.creeper-party.max-active-charges", 3);
+        changed |= def("events.creeper-party.walk-speed", 0.26);
+        changed |= def("events.creeper-party.charge-timeout-ticks", 160);
+        changed |= def("events.creeper-party.hit-radius", 2.0);
+        changed |= def("events.creeper-party.player-knockback", 1.35);
+        changed |= def("events.creeper-party.respawn-delay-ticks", 60);
         changed |= def("events.region.worldguard-region", "spawn");
         changed |= def("events.region.padding", 8);
         changed |= def("events.region.min-x", 0);
@@ -258,6 +319,25 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         meteorPerWave        = Math.max(1, cfg.getInt("events.meteor-shower.fireballs-per-wave", 2));
         meteorSpawnHeight    = Math.max(5, cfg.getDouble("events.meteor-shower.spawn-height", 28));
         meteorHitRadius      = Math.max(0.5, cfg.getDouble("events.meteor-shower.hit-radius", 2.5));
+        creeperEnabled       = cfg.getBoolean("events.creeper-party.enabled", true);
+        creeperDuration      = Math.max(5, cfg.getInt("events.creeper-party.duration-seconds", 180));
+        creeperLineY         = cfg.getInt("events.creeper-party.line-y", 46);
+        creeperMinX          = cfg.getInt("events.creeper-party.min-x", -58);
+        creeperMaxX          = cfg.getInt("events.creeper-party.max-x", 21);
+        creeperLine1Z        = cfg.getInt("events.creeper-party.line1-z", 71);
+        creeperLine2Z        = cfg.getInt("events.creeper-party.line2-z", 59);
+        creeperStep          = Math.max(1, cfg.getInt("events.creeper-party.step", 3));
+        creeperJumpInterval  = Math.max(5, cfg.getInt("events.creeper-party.jump-interval-ticks", 40));
+        creeperJumpPower     = Math.max(0.05, cfg.getDouble("events.creeper-party.jump-power", 0.42));
+        creeperChargeInterval= Math.max(5, cfg.getInt("events.creeper-party.charge-interval-ticks", 50));
+        creeperChargeChance  = Math.min(1.0, Math.max(0.0, cfg.getDouble("events.creeper-party.charge-chance", 0.45)));
+        creeperPlayerChance  = Math.min(1.0, Math.max(0.0, cfg.getDouble("events.creeper-party.player-target-chance", 0.15)));
+        creeperMaxCharges    = Math.max(1, cfg.getInt("events.creeper-party.max-active-charges", 3));
+        creeperWalkSpeed     = Math.max(0.05, cfg.getDouble("events.creeper-party.walk-speed", 0.26));
+        creeperChargeTimeout = Math.max(20, cfg.getInt("events.creeper-party.charge-timeout-ticks", 160));
+        creeperHitRadius     = Math.max(0.5, cfg.getDouble("events.creeper-party.hit-radius", 2.0));
+        creeperPlayerKnockback = Math.max(0.1, cfg.getDouble("events.creeper-party.player-knockback", 1.35));
+        creeperRespawnDelay  = Math.max(10, cfg.getInt("events.creeper-party.respawn-delay-ticks", 60));
         regionName           = cfg.getString("events.region.worldguard-region", "spawn");
         regionPadding        = Math.max(0, cfg.getDouble("events.region.padding", 8));
         manualMinX           = cfg.getDouble("events.region.min-x", 0);
@@ -359,6 +439,10 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (feedback != null) feedback.sendMessage("§cИвент «Метеоритный Дождь» отключён в конфиге.");
             return false;
         }
+        if (type == EventType.CREEPER_PARTY && !creeperEnabled) {
+            if (feedback != null) feedback.sendMessage("§cИвент «Крипер Пати» отключён в конфиге.");
+            return false;
+        }
         if (activeEvent != null) stopEvent(true);
 
         World world = resolveWorld(feedback);
@@ -366,7 +450,13 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (feedback != null) feedback.sendMessage("§cНе найден мир для ивента (events.world в конфиге).");
             return false;
         }
-        if (seconds <= 0) seconds = (type == EventType.BAD_WEATHER) ? weatherDuration : meteorDuration;
+        if (seconds <= 0) {
+            seconds = switch (type) {
+                case BAD_WEATHER -> weatherDuration;
+                case METEOR_SHOWER -> meteorDuration;
+                case CREEPER_PARTY -> creeperDuration;
+            };
+        }
 
         activeEvent = type;
         activeWorld = world;
@@ -382,16 +472,22 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             p.sendMessage(type.format + "✦ Начался ивент: " + type.title + "!");
             try { p.sendTitle(type.format + type.title, "§7" + eventTotalSeconds + " секунд", 10, 50, 20); }
             catch (Throwable ignored) {}
-            p.playSound(p.getLocation(), type == EventType.BAD_WEATHER ? Sound.ENTITY_LIGHTNING_BOLT_THUNDER
-                    : Sound.ENTITY_GENERIC_EXPLODE, 0.7f, 0.8f);
+            p.playSound(p.getLocation(), switch (type) {
+                case BAD_WEATHER -> Sound.ENTITY_LIGHTNING_BOLT_THUNDER;
+                case METEOR_SHOWER -> Sound.ENTITY_GENERIC_EXPLODE;
+                case CREEPER_PARTY -> Sound.ENTITY_CREEPER_PRIMED;
+            }, 0.7f, 0.8f);
         }
 
         barTask = new BukkitRunnable() {
             @Override public void run() { tickBar(); }
         }.runTaskTimer(this, 20L, 20L);
 
-        if (type == EventType.BAD_WEATHER) startBadWeather(world, seconds);
-        else startMeteorShower(world);
+        switch (type) {
+            case BAD_WEATHER -> startBadWeather(world, seconds);
+            case METEOR_SHOWER -> startMeteorShower(world);
+            case CREEPER_PARTY -> startCreeperParty(world);
+        }
 
         getLogger().info("Ивент " + type.title + " запущен на " + seconds + "с в мире " + world.getName());
         return true;
@@ -427,6 +523,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         if (barTask != null) { try { barTask.cancel(); } catch (Throwable ignored) {} barTask = null; }
         if (actionTask != null) { try { actionTask.cancel(); } catch (Throwable ignored) {} actionTask = null; }
         if (meteorTickTask != null) { try { meteorTickTask.cancel(); } catch (Throwable ignored) {} meteorTickTask = null; }
+        clearCreeperParty();
         if (activeBar != null) { try { activeBar.removeAll(); activeBar.setVisible(false); } catch (Throwable ignored) {} activeBar = null; }
         for (Entity meteor : new ArrayList<>(activeMeteors)) {
             try { if (meteor.isValid()) meteor.remove(); } catch (Throwable ignored) {}
@@ -463,6 +560,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 List<EventType> pool = new ArrayList<>();
                 if (weatherEnabled) pool.add(EventType.BAD_WEATHER);
                 if (meteorEnabled) pool.add(EventType.METEOR_SHOWER);
+                if (creeperEnabled) pool.add(EventType.CREEPER_PARTY);
                 if (pool.isEmpty()) return;
                 startEvent(pool.get(random.nextInt(pool.size())), 0, null);
             }
@@ -608,6 +706,282 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (d <= best) { best = d; closest = mob; }
         }
         meteorImpact(meteor, closest);
+    }
+
+    // =========================================================
+    // ИВЕНТ 3: КРИПЕР ПАТИ (крипер добегает и взрывает -> мутация Взрывной)
+    // =========================================================
+    private void startCreeperParty(World world) {
+        partyCreeperSpots.clear();
+        int minX = Math.min(creeperMinX, creeperMaxX);
+        int maxX = Math.max(creeperMinX, creeperMaxX);
+        for (int x = minX; x <= maxX; x += creeperStep) {
+            partyCreeperSpots.add(new Location(world, x + 0.5, creeperLineY, creeperLine1Z + 0.5));
+            partyCreeperSpots.add(new Location(world, x + 0.5, creeperLineY, creeperLine2Z + 0.5));
+        }
+        for (Location spot : partyCreeperSpots) spawnPartyCreeper(spot);
+        getLogger().info("Крипер Пати: выставлено криперов — " + partyCreepers.size()
+                + " (шаг " + creeperStep + ")");
+
+        // Прыжки: все криперы синхронно подпрыгивают.
+        creeperJumpTask = new BukkitRunnable() {
+            @Override public void run() {
+                if (activeEvent != EventType.CREEPER_PARTY) { cancel(); return; }
+                for (Entity c : new ArrayList<>(partyCreepers)) {
+                    if (c == null || !c.isValid()) continue;
+                    if (creeperCharges.containsKey(c)) continue; // бегущий не прыгает
+                    try {
+                        c.setVelocity(new Vector(0, creeperJumpPower, 0));
+                        c.getWorld().playSound(c.getLocation(), Sound.ENTITY_CREEPER_HURT, 0.25f, 1.8f);
+                        c.getWorld().spawnParticle(Particle.HAPPY_VILLAGER, c.getLocation().add(0, 0.6, 0),
+                                2, 0.2, 0.2, 0.2, 0.0);
+                    } catch (Throwable ignored) {}
+                }
+            }
+        }.runTaskTimer(this, creeperJumpInterval, creeperJumpInterval);
+
+        // Выбор жертвы.
+        actionTask = new BukkitRunnable() {
+            @Override public void run() {
+                if (activeEvent != EventType.CREEPER_PARTY) { cancel(); return; }
+                if (creeperCharges.size() >= creeperMaxCharges) return;
+                if (random.nextDouble() > creeperChargeChance) return;
+                launchCreeperCharge(world);
+            }
+        }.runTaskTimer(this, 40L, creeperChargeInterval);
+
+        // Добор пропавших криперов.
+        creeperRefillTask = new BukkitRunnable() {
+            @Override public void run() {
+                if (activeEvent != EventType.CREEPER_PARTY) { cancel(); return; }
+                partyCreepers.removeIf(c -> c == null || !c.isValid());
+                if (partyCreepers.size() >= partyCreeperSpots.size()) return;
+                for (Location spot : partyCreeperSpots) {
+                    if (partyCreepers.size() >= partyCreeperSpots.size()) break;
+                    boolean taken = false;
+                    for (Entity c : partyCreepers) {
+                        if (c.isValid() && c.getLocation().distanceSquared(spot) <= 4.0) { taken = true; break; }
+                    }
+                    if (!taken) spawnPartyCreeper(spot);
+                }
+            }
+        }.runTaskTimer(this, creeperRespawnDelay, creeperRespawnDelay);
+    }
+
+    private void spawnPartyCreeper(Location spot) {
+        if (spot == null || spot.getWorld() == null) return;
+        try {
+            Creeper c = spot.getWorld().spawn(spot, Creeper.class, cr -> {
+                cr.addScoreboardTag(PARTY_CREEPER_TAG);
+                // ИИ оставляем включённым: с NoAI сервер не считает физику, и прыжки бы не работали.
+                // Вместо этого вешаем бесконечную слабость к скорости, чтобы криперы стояли в линии.
+                cr.setAI(true);
+                try {
+                    cr.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS,
+                            PotionEffect.INFINITE_DURATION, 250, false, false, false));
+                } catch (Throwable ignored) {}
+                cr.setInvulnerable(true);
+                cr.setSilent(true);
+                cr.setCollidable(false);
+                cr.setRemoveWhenFarAway(false);
+                cr.setPersistent(true);
+                cr.setCustomName("§a§lКрипер Пати");
+                cr.setCustomNameVisible(false);
+                try { cr.setTarget(null); } catch (Throwable ignored) {}
+                try { cr.setExplosionRadius(0); } catch (Throwable ignored) {}
+                try { cr.setMaxFuseTicks(200); } catch (Throwable ignored) {}
+            });
+            partyCreepers.add(c);
+        } catch (Throwable t) {
+            getLogger().warning("Не удалось поставить крипера: " + t.getMessage());
+        }
+    }
+
+    /** Выбирает свободного крипера и цель: чаще моб на конвейере, реже — ближайший игрок. */
+    private void launchCreeperCharge(World world) {
+        List<Entity> idle = new ArrayList<>();
+        for (Entity c : partyCreepers) {
+            if (c != null && c.isValid() && !creeperCharges.containsKey(c)) idle.add(c);
+        }
+        if (idle.isEmpty()) return;
+
+        boolean goPlayer = random.nextDouble() < creeperPlayerChance;
+        Entity target = null;
+        Entity creeper = null;
+
+        if (!goPlayer) {
+            List<Entity> mobs = new ArrayList<>();
+            for (Entity m : getSpawnerMobs()) {
+                if (m != null && m.isValid() && m.getWorld().equals(world)) mobs.add(m);
+            }
+            if (!mobs.isEmpty()) target = mobs.get(random.nextInt(mobs.size()));
+        }
+        if (target == null) {
+            // Либо выпал дебафф, либо мобов на конвейере нет — идём к игроку.
+            goPlayer = true;
+            Player best = null;
+            double bestDist = Double.MAX_VALUE;
+            for (Player p : world.getPlayers()) {
+                if (p.isDead() || p.getGameMode() == org.bukkit.GameMode.SPECTATOR) continue;
+                for (Entity c : idle) {
+                    double d = c.getLocation().distanceSquared(p.getLocation());
+                    if (d < bestDist) { bestDist = d; best = p; creeper = c; }
+                }
+            }
+            if (best == null) return;
+            target = best;
+        }
+        if (creeper == null) {
+            // Ближайший к цели свободный крипер.
+            double bestDist = Double.MAX_VALUE;
+            for (Entity c : idle) {
+                double d = c.getLocation().distanceSquared(target.getLocation());
+                if (d < bestDist) { bestDist = d; creeper = c; }
+            }
+        }
+        if (creeper == null) return;
+        startCreeperCharge(creeper, target, goPlayer);
+    }
+
+    private void startCreeperCharge(Entity creeper, Entity target, boolean playerTarget) {
+        try {
+            creeper.setVelocity(new Vector(0, 0, 0));
+            if (creeper instanceof Creeper cr) cr.setIgnited(false);
+            creeper.getWorld().playSound(creeper.getLocation(), Sound.ENTITY_CREEPER_PRIMED, 0.8f, 1.2f);
+        } catch (Throwable ignored) {}
+
+        final Entity finalTarget = target;
+        BukkitTask task = new BukkitRunnable() {
+            int ticks = 0;
+            @Override public void run() {
+                if (activeEvent != EventType.CREEPER_PARTY || !creeper.isValid()) { finish(); return; }
+                if (finalTarget == null || !finalTarget.isValid() || ++ticks > creeperChargeTimeout) {
+                    fizzleCreeper(creeper);
+                    finish();
+                    return;
+                }
+                Location cur = creeper.getLocation();
+                Location tl = finalTarget.getLocation();
+                if (!cur.getWorld().equals(tl.getWorld())) { fizzleCreeper(creeper); finish(); return; }
+                if (cur.distanceSquared(tl) <= creeperHitRadius * creeperHitRadius) {
+                    detonateCreeper(creeper, finalTarget, playerTarget);
+                    finish();
+                    return;
+                }
+                Vector dir = tl.toVector().subtract(cur.toVector());
+                dir.setY(0);
+                if (dir.lengthSquared() < 1.0E-4) dir = new Vector(0.1, 0, 0);
+                dir.normalize().multiply(creeperWalkSpeed);
+                Location next = cur.clone().add(dir);
+                next.setY(groundYFor(next, cur.getY(), tl.getY()));
+                next.setDirection(tl.toVector().subtract(next.toVector()));
+                try {
+                    creeper.teleport(next);
+                    if (ticks % 4 == 0) {
+                        creeper.getWorld().spawnParticle(Particle.CRIT, next.clone().add(0, 0.3, 0), 1, 0.1, 0.1, 0.1, 0.0);
+                    }
+                    if (ticks % 10 == 0) {
+                        creeper.getWorld().playSound(next, Sound.ENTITY_CREEPER_PRIMED, 0.35f, 1.6f);
+                    }
+                } catch (Throwable ignored) {}
+            }
+
+            private void finish() {
+                creeperCharges.remove(creeper);
+                try { cancel(); } catch (Throwable ignored) {}
+            }
+        }.runTaskTimer(this, 1L, 1L);
+        creeperCharges.put(creeper, task);
+    }
+
+    /** Держим крипера на земле: без AI гравитация при телепортах не помогает. */
+    private double groundYFor(Location next, double currentY, double targetY) {
+        World w = next.getWorld();
+        int bx = next.getBlockX(), bz = next.getBlockZ();
+        int from = (int) Math.floor(Math.max(currentY, targetY)) + 2;
+        int to = (int) Math.floor(Math.min(currentY, targetY)) - 3;
+        for (int y = from; y >= to; y--) {
+            try {
+                if (!w.getBlockAt(bx, y, bz).isPassable()
+                        && w.getBlockAt(bx, y + 1, bz).isPassable()
+                        && w.getBlockAt(bx, y + 2, bz).isPassable()) {
+                    return y + 1;
+                }
+            } catch (Throwable ignored) {}
+        }
+        return currentY;
+    }
+
+    private void fizzleCreeper(Entity creeper) {
+        try {
+            creeper.getWorld().spawnParticle(Particle.SMOKE, creeper.getLocation().add(0, 0.5, 0), 10, 0.3, 0.3, 0.3, 0.02);
+        } catch (Throwable ignored) {}
+        returnCreeperToLine(creeper);
+    }
+
+    /** Вернуть крипера на свободное место в линии, чтобы шеренга не редела. */
+    private void returnCreeperToLine(Entity creeper) {
+        Location home = null;
+        for (Location spot : partyCreeperSpots) {
+            boolean taken = false;
+            for (Entity c : partyCreepers) {
+                if (c != creeper && c.isValid() && c.getLocation().distanceSquared(spot) <= 4.0) { taken = true; break; }
+            }
+            if (!taken) { home = spot; break; }
+        }
+        if (home == null) return;
+        try { creeper.teleport(home); } catch (Throwable ignored) {}
+    }
+
+    private void detonateCreeper(Entity creeper, Entity target, boolean playerTarget) {
+        Location loc = creeper.getLocation();
+        try {
+            loc.getWorld().spawnParticle(Particle.EXPLOSION_EMITTER, loc.clone().add(0, 0.5, 0), 1, 0, 0, 0, 0.0);
+            loc.getWorld().spawnParticle(Particle.FLAME, loc.clone().add(0, 0.5, 0), 25, 0.6, 0.5, 0.6, 0.05);
+            loc.getWorld().playSound(loc, Sound.ENTITY_GENERIC_EXPLODE, 1.0f, 1.1f);
+        } catch (Throwable ignored) {}
+        try { creeper.remove(); } catch (Throwable ignored) {}
+        partyCreepers.remove(creeper);
+
+        if (playerTarget && target instanceof Player p) {
+            Vector push = p.getLocation().toVector().subtract(loc.toVector());
+            push.setY(0);
+            if (push.lengthSquared() < 1.0E-4) push = new Vector(random.nextDouble() - 0.5, 0, random.nextDouble() - 0.5);
+            push.normalize().multiply(creeperPlayerKnockback).setY(0.85);
+            knockbackGrace.add(p.getUniqueId());
+            final UUID id = p.getUniqueId();
+            Bukkit.getScheduler().runTaskLater(this, () -> knockbackGrace.remove(id), 200L);
+            try {
+                p.setVelocity(push);
+                p.playSound(p.getLocation(), Sound.ENTITY_GENERIC_EXPLODE, 1.0f, 1.3f);
+                p.sendMessage("§a☠ Крипер подкрался к тебе и рванул — держись!");
+            } catch (Throwable ignored) {}
+        } else if (target != null && applyStackableMutation(target, "EXPLOSIVE")) {
+            for (Player p : loc.getWorld().getPlayers()) {
+                if (p.getLocation().distanceSquared(loc) <= 60 * 60) {
+                    p.sendMessage("§a✦ Крипер взорвал моба — мутация §aВзрывной§a!");
+                }
+            }
+        }
+    }
+
+    private void clearCreeperParty() {
+        if (creeperJumpTask != null) { try { creeperJumpTask.cancel(); } catch (Throwable ignored) {} creeperJumpTask = null; }
+        if (creeperRefillTask != null) { try { creeperRefillTask.cancel(); } catch (Throwable ignored) {} creeperRefillTask = null; }
+        for (BukkitTask t : new ArrayList<>(creeperCharges.values())) {
+            try { t.cancel(); } catch (Throwable ignored) {}
+        }
+        creeperCharges.clear();
+        for (Entity c : new ArrayList<>(partyCreepers)) {
+            try { if (c != null && c.isValid()) c.remove(); } catch (Throwable ignored) {}
+        }
+        partyCreepers.clear();
+        partyCreeperSpots.clear();
+        knockbackGrace.clear();
+    }
+
+    private boolean isPartyCreeper(Entity e) {
+        return e != null && e.getScoreboardTags().contains(PARTY_CREEPER_TAG);
     }
 
     // =========================================================
@@ -778,7 +1152,14 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onAnyDamage(EntityDamageEvent event) {
         EntityDamageEvent.DamageCause cause = event.getCause();
+        if (isPartyCreeper(event.getEntity())) { event.setCancelled(true); return; }
         if (cause == EntityDamageEvent.DamageCause.LIGHTNING) { event.setCancelled(true); return; }
+        // Отброшенный крипером игрок не должен умереть от падения.
+        if ((cause == EntityDamageEvent.DamageCause.FALL || cause == EntityDamageEvent.DamageCause.FLY_INTO_WALL)
+                && event.getEntity() instanceof Player p && knockbackGrace.contains(p.getUniqueId())) {
+            event.setCancelled(true);
+            return;
+        }
         if (activeEvent == EventType.BAD_WEATHER
                 && (cause == EntityDamageEvent.DamageCause.FIRE || cause == EntityDamageEvent.DamageCause.FIRE_TICK)) {
             event.setCancelled(true);
@@ -788,10 +1169,22 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onDamageByEntity(EntityDamageByEntityEvent event) {
         Entity damager = event.getDamager();
-        if (damager instanceof LightningStrike || isMeteor(damager)) {
+        if (damager instanceof LightningStrike || isMeteor(damager) || isPartyCreeper(damager)) {
             event.setDamage(0.0);
             event.setCancelled(true);
         }
+    }
+
+    /** Криперы пати не должны заряжаться от молний во время «Плохой Погоды». */
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onCreeperPower(CreeperPowerEvent event) {
+        if (isPartyCreeper(event.getEntity())) event.setCancelled(true);
+    }
+
+    /** Цели крипер выбирает не сам — движением рулит ивент. */
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onCreeperTarget(EntityTargetEvent event) {
+        if (isPartyCreeper(event.getEntity())) event.setCancelled(true);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
@@ -813,7 +1206,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onExplosionPrime(ExplosionPrimeEvent event) {
-        if (!isMeteor(event.getEntity())) return;
+        if (!isMeteor(event.getEntity()) && !isPartyCreeper(event.getEntity())) return;
         event.setRadius(0f);
         event.setFire(false);
         event.setCancelled(true);
@@ -821,7 +1214,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onExplode(EntityExplodeEvent event) {
-        if (!isMeteor(event.getEntity())) return;
+        if (!isMeteor(event.getEntity()) && !isPartyCreeper(event.getEntity())) return;
         event.blockList().clear();
         event.setCancelled(true);
     }
@@ -918,7 +1311,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 return true;
             }
             if (args.length == 0) {
-                sender.sendMessage("§6/" + label + " start <badweather|meteor> [секунды]");
+                sender.sendMessage("§6/" + label + " start <badweather|meteor|creeper> [секунды]");
                 sender.sendMessage("§6/" + label + " stop §7— остановить текущий ивент");
                 sender.sendMessage("§6/" + label + " status §7— что сейчас идёт");
                 sender.sendMessage("§6/" + label + " reload §7— перечитать конфиг");
@@ -926,7 +1319,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             }
             switch (args[0].toLowerCase(Locale.ROOT)) {
                 case "start" -> {
-                    if (args.length < 2) { sender.sendMessage("§cУкажи ивент: badweather или meteor."); return true; }
+                    if (args.length < 2) { sender.sendMessage("§cУкажи ивент: badweather, meteor или creeper."); return true; }
                     EventType type = EventType.byKey(args[1]);
                     if (type == null) { sender.sendMessage("§cНеизвестный ивент: " + args[1]); return true; }
                     int seconds = 0;
@@ -961,6 +1354,11 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                     if (activeEvent == EventType.METEOR_SHOWER) {
                         sender.sendMessage("§7Метеоритов в воздухе: " + activeMeteors.size());
                     }
+                    if (activeEvent == EventType.CREEPER_PARTY) {
+                        sender.sendMessage("§7Криперов в линии: §f" + partyCreepers.size()
+                                + " §7| бегут к цели: §f" + creeperCharges.size()
+                                + " §7| шанс на игрока: §f" + (int) Math.round(creeperPlayerChance * 100) + "%");
+                    }
                 }
                 case "reload" -> {
                     reloadConfig();
@@ -982,7 +1380,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 return filter(List.of("start", "stop", "status", "reload"), args[0]);
             }
             if (args.length == 2 && args[0].equalsIgnoreCase("start")) {
-                return filter(List.of("badweather", "meteor"), args[1]);
+                return filter(List.of("badweather", "meteor", "creeper"), args[1]);
             }
             if (args.length == 3 && args[0].equalsIgnoreCase("start")) {
                 return filter(List.of("60", "120", "180", "300"), args[2]);

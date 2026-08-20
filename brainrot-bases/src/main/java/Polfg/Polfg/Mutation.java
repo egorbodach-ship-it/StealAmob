@@ -13,7 +13,8 @@ enum Mutation {
     RAINBOW("Радужный", "§f", 10.0),
     SNOWY("Снежный", "§b", 5.0),
     ELECTRIC("Электрический", "§e", 3.0),
-    METEOR("Метеоритный", "§c", 4.0);
+    METEOR("Метеоритный", "§c", 4.0),
+    EXPLOSIVE("Взрывной", "§a", 3.5);
     final String displayName;
     final String format;
     double incomeMultiplier;
@@ -24,7 +25,7 @@ enum Mutation {
     }
 
     /** Мутации, которые стакаются поверх базовой (SNOWY хранится отдельным флагом, см. isSnowy). */
-    static final List<Mutation> STACKABLE = Arrays.asList(ELECTRIC, METEOR);
+    static final List<Mutation> STACKABLE = Arrays.asList(ELECTRIC, METEOR, EXPLOSIVE);
 
     static Mutation fromEntity(Entity entity) {
         if (entity == null) return NONE;

@@ -349,7 +349,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
             if (e.getSlot() == 11) { modifyMob(admin, targetName, mobIndex, "DELETE", null); }
             if (e.getSlot() == 14) { modifyMob(admin, targetName, mobIndex, "TOGGLE_LB", null); }
             // Все мутации — тумблеры: клик по включённой снимает её. После клика остаёмся в редакторе.
-            if (e.getSlot() == 13 || (e.getSlot() >= 15 && e.getSlot() <= 21)) {
+            if (e.getSlot() == 13 || (e.getSlot() >= 15 && e.getSlot() <= 21) || e.getSlot() == 23) {
                 switch (e.getSlot()) {
                     case 13 -> modifyMob(admin, targetName, mobIndex, "CLEAR_MUTATION", null);
                     case 15 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_BASE", "GOLD");
@@ -358,12 +358,13 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
                     case 19 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_SNOWY", null);
                     case 20 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_EXTRA", "ELECTRIC");
                     case 21 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_EXTRA", "METEOR");
+                    case 23 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_EXTRA", "EXPLOSIVE");
                     default -> { }
                 }
                 Bukkit.getScheduler().runTaskLater(this, () -> openMobEditMenu(admin, mobIndex), 15L);
                 return;
             }
-            if (e.getSlot() == 22) { openProfile(admin, targetName); return; }
+            if (e.getSlot() == 26) { openProfile(admin, targetName); return; }
             
             Bukkit.getScheduler().runTaskLater(this, () -> openProfile(admin, targetName), 10L);
         }
@@ -420,16 +421,19 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
         inv.setItem(21, createItem(Material.FIRE_CHARGE, "§cМетеоритный §7(×4)",
                 "§7Сейчас: " + (curExtras.contains("METEOR") ? "§aвключён" : "§cвыключен"),
                 "§eКлик — вкл/выкл"));
-        
+        inv.setItem(23, createItem(Material.TNT, "§aВзрывной §7(×3.5)",
+                "§7Сейчас: " + (curExtras.contains("EXPLOSIVE") ? "§aвключён" : "§cвыключен"),
+                "§eКлик — вкл/выкл"));
+
         if (type.equals("SPONGE")) {
             boolean isReady = cfg.getBoolean("mobs." + targetName + "." + index + ".luckyBlockReady", false);
-            inv.setItem(14, createItem(Material.CLOCK, "§eСостояние Лаки-Блока", 
+            inv.setItem(14, createItem(Material.CLOCK, "§eСостояние Лаки-Блока",
                 "§7Сейчас: " + (isReady ? "§aГОТОВ" : "§cТАЙМЕР"),
                 "§eНажмите, чтобы переключить"
             ));
         }
-        
-        inv.setItem(22, createItem(Material.ARROW, "§cНазад"));
+
+        inv.setItem(26, createItem(Material.ARROW, "§cНазад"));
         admin.openInventory(inv);
     }
 
@@ -540,7 +544,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
     }
 
     /** Стакающиеся мутации, которые можно навесить поверх базовой. */
-    private static final List<String> STACKABLE_MUTATIONS = Arrays.asList("ELECTRIC", "METEOR");
+    private static final List<String> STACKABLE_MUTATIONS = Arrays.asList("ELECTRIC", "METEOR", "EXPLOSIVE");
 
     /** Возвращает [строка мутаций, snowy] текущего моба из mobs.yml. */
     private String[] readMobMutation(String targetName, int index) {
