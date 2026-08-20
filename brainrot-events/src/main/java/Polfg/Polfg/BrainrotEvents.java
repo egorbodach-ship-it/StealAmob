@@ -47,6 +47,7 @@ import org.bukkit.util.Vector;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -116,14 +117,27 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private static final String PARTY_CREEPER_TAG = "BRAINROT_PARTY_CREEPER";
     private final Random random = new Random();
 
-    private EventType activeEvent;
-    private BossBar activeBar;
-    private World activeWorld;
-    private long eventEndMillis;
-    private int eventTotalSeconds;
+    /** Один запущенный ивент: свой босс-бар, свой мир, свой таймер и свои задачи. */
+    private static final class EventSession {
+        final EventType type;
+        final World world;
+        final BossBar bar;
+        final int totalSeconds;
+        final long endMillis;
+        final List<BukkitTask> tasks = new ArrayList<>();
+
+        EventSession(EventType type, World world, BossBar bar, int totalSeconds) {
+            this.type = type;
+            this.world = world;
+            this.bar = bar;
+            this.totalSeconds = totalSeconds;
+            this.endMillis = System.currentTimeMillis() + totalSeconds * 1000L;
+        }
+    }
+
+    /** Ивенты стакаются: одновременно может идти любой набор, но не по два одинаковых. */
+    private final Map<EventType, EventSession> sessions = new EnumMap<>(EventType.class);
     private BukkitTask barTask;
-    private BukkitTask actionTask;
-    private BukkitTask meteorTickTask;
     private BukkitTask autoTask;
     private final Set<Entity> activeMeteors = new HashSet<>();
     private boolean weatherRestore = false;
@@ -140,6 +154,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private String eventsWorldName = "";
     private boolean autoEnabled = false;
     private int autoIntervalMinutes = 20;
+    private int autoMaxActive = 2;
     private boolean weatherEnabled = true;
     private int weatherDuration = 180;
     private int weatherStrikeInterval = 60;
@@ -209,7 +224,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
 
     @Override
     public void onDisable() {
-        try { stopEvent(true); } catch (Throwable ignored) {}
+        try { stopAllEvents(true); } catch (Throwable ignored) {}
         try { Bukkit.getScheduler().cancelTasks(this); } catch (Throwable __t) {}
         try { org.bukkit.event.HandlerList.unregisterAll((org.bukkit.plugin.Plugin) this); } catch (Throwable __t) {}
         stopAllLoops();
@@ -255,6 +270,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         changed |= def("events.world", "");
         changed |= def("events.auto.enabled", false);
         changed |= def("events.auto.interval-minutes", 20);
+        // Сколько ивентов авто-планировщик может держать одновременно (ивенты стакаются).
+        changed |= def("events.auto.max-active", 2);
         changed |= def("events.bad-weather.enabled", true);
         changed |= def("events.bad-weather.duration-seconds", 180);
         changed |= def("events.bad-weather.strike-interval-ticks", 60);
@@ -276,10 +293,10 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         changed |= def("events.creeper-party.step", 3);
         changed |= def("events.creeper-party.jump-interval-ticks", 40);
         changed |= def("events.creeper-party.jump-power", 0.42);
-        changed |= def("events.creeper-party.charge-interval-ticks", 50);
-        changed |= def("events.creeper-party.charge-chance", 0.45);
+        changed |= def("events.creeper-party.charge-interval-ticks", 70);
+        changed |= def("events.creeper-party.charge-chance", 0.22);
         changed |= def("events.creeper-party.player-target-chance", 0.15);
-        changed |= def("events.creeper-party.max-active-charges", 3);
+        changed |= def("events.creeper-party.max-active-charges", 2);
         changed |= def("events.creeper-party.walk-speed", 0.26);
         changed |= def("events.creeper-party.charge-timeout-ticks", 160);
         changed |= def("events.creeper-party.hit-radius", 2.0);
@@ -303,11 +320,26 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             cfg.set("events.config-version", 2);
             changed = true;
         }
+        // Миграция 3: криперы взрывали мобов слишком часто — реже кубик, ниже шанс, меньше одновременных забегов.
+        if (cfg.getInt("events.config-version", 1) < 3) {
+            if (Math.abs(cfg.getDouble("events.creeper-party.charge-chance", 0.22) - 0.45) < 1.0E-6) {
+                cfg.set("events.creeper-party.charge-chance", 0.22);
+            }
+            if (cfg.getInt("events.creeper-party.charge-interval-ticks", 70) == 50) {
+                cfg.set("events.creeper-party.charge-interval-ticks", 70);
+            }
+            if (cfg.getInt("events.creeper-party.max-active-charges", 2) == 3) {
+                cfg.set("events.creeper-party.max-active-charges", 2);
+            }
+            cfg.set("events.config-version", 3);
+            changed = true;
+        }
         if (changed) saveConfig();
 
         eventsWorldName      = cfg.getString("events.world", "");
         autoEnabled          = cfg.getBoolean("events.auto.enabled", false);
         autoIntervalMinutes  = Math.max(1, cfg.getInt("events.auto.interval-minutes", 20));
+        autoMaxActive        = Math.max(1, cfg.getInt("events.auto.max-active", 2));
         weatherEnabled       = cfg.getBoolean("events.bad-weather.enabled", true);
         weatherDuration      = Math.max(5, cfg.getInt("events.bad-weather.duration-seconds", 180));
         weatherStrikeInterval= Math.max(5, cfg.getInt("events.bad-weather.strike-interval-ticks", 60));
@@ -329,10 +361,10 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         creeperStep          = Math.max(1, cfg.getInt("events.creeper-party.step", 3));
         creeperJumpInterval  = Math.max(5, cfg.getInt("events.creeper-party.jump-interval-ticks", 40));
         creeperJumpPower     = Math.max(0.05, cfg.getDouble("events.creeper-party.jump-power", 0.42));
-        creeperChargeInterval= Math.max(5, cfg.getInt("events.creeper-party.charge-interval-ticks", 50));
-        creeperChargeChance  = Math.min(1.0, Math.max(0.0, cfg.getDouble("events.creeper-party.charge-chance", 0.45)));
+        creeperChargeInterval= Math.max(5, cfg.getInt("events.creeper-party.charge-interval-ticks", 70));
+        creeperChargeChance  = Math.min(1.0, Math.max(0.0, cfg.getDouble("events.creeper-party.charge-chance", 0.22)));
         creeperPlayerChance  = Math.min(1.0, Math.max(0.0, cfg.getDouble("events.creeper-party.player-target-chance", 0.15)));
-        creeperMaxCharges    = Math.max(1, cfg.getInt("events.creeper-party.max-active-charges", 3));
+        creeperMaxCharges    = Math.max(1, cfg.getInt("events.creeper-party.max-active-charges", 2));
         creeperWalkSpeed     = Math.max(0.05, cfg.getDouble("events.creeper-party.walk-speed", 0.26));
         creeperChargeTimeout = Math.max(20, cfg.getInt("events.creeper-party.charge-timeout-ticks", 160));
         creeperHitRadius     = Math.max(0.5, cfg.getDouble("events.creeper-party.hit-radius", 2.0));
@@ -411,7 +443,9 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     public void onJoin(PlayerJoinEvent e) {
         final Player p = e.getPlayer();
         final UUID id = p.getUniqueId();
-        if (activeBar != null && activeWorld != null && p.getWorld().equals(activeWorld)) activeBar.addPlayer(p);
+        for (EventSession s : sessions.values()) {
+            if (s.world != null && p.getWorld().equals(s.world)) s.bar.addPlayer(p);
+        }
         if (!musicEnabled) return;
         // Небольшая задержка, чтобы клиент успел подгрузить ресурспак.
         Bukkit.getScheduler().runTaskLater(this, () -> {
@@ -424,7 +458,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     @EventHandler
     public void onQuit(PlayerQuitEvent e) {
         stopPlayerLoop(e.getPlayer());
-        if (activeBar != null) activeBar.removePlayer(e.getPlayer());
+        for (EventSession s : sessions.values()) s.bar.removePlayer(e.getPlayer());
     }
     // =========================================================
     // ИВЕНТЫ: запуск / остановка / босс-бар
@@ -443,7 +477,10 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (feedback != null) feedback.sendMessage("§cИвент «Крипер Пати» отключён в конфиге.");
             return false;
         }
-        if (activeEvent != null) stopEvent(true);
+        if (isActive(type)) {
+            // Тот же ивент запускают повторно — перезапускаем именно его, остальные не трогаем.
+            stopEvent(type, true);
+        }
 
         World world = resolveWorld(feedback);
         if (world == null) {
@@ -458,19 +495,16 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             };
         }
 
-        activeEvent = type;
-        activeWorld = world;
-        eventTotalSeconds = seconds;
-        eventEndMillis = System.currentTimeMillis() + seconds * 1000L;
-
-        activeBar = Bukkit.createBossBar(type.format + type.title, type.color, BarStyle.SEGMENTED_10);
-        activeBar.setProgress(1.0);
-        activeBar.setVisible(true);
-        syncBarPlayers();
+        BossBar bar = Bukkit.createBossBar(type.format + type.title, type.color, BarStyle.SEGMENTED_10);
+        bar.setProgress(1.0);
+        bar.setVisible(true);
+        EventSession session = new EventSession(type, world, bar, seconds);
+        sessions.put(type, session);
+        syncBarPlayers(session);
 
         for (Player p : world.getPlayers()) {
             p.sendMessage(type.format + "✦ Начался ивент: " + type.title + "!");
-            try { p.sendTitle(type.format + type.title, "§7" + eventTotalSeconds + " секунд", 10, 50, 20); }
+            try { p.sendTitle(type.format + type.title, "§7" + seconds + " секунд", 10, 50, 20); }
             catch (Throwable ignored) {}
             p.playSound(p.getLocation(), switch (type) {
                 case BAD_WEATHER -> Sound.ENTITY_LIGHTNING_BOLT_THUNDER;
@@ -479,36 +513,69 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             }, 0.7f, 0.8f);
         }
 
-        barTask = new BukkitRunnable() {
-            @Override public void run() { tickBar(); }
-        }.runTaskTimer(this, 20L, 20L);
+        ensureBarTask();
 
         switch (type) {
-            case BAD_WEATHER -> startBadWeather(world, seconds);
-            case METEOR_SHOWER -> startMeteorShower(world);
-            case CREEPER_PARTY -> startCreeperParty(world);
+            case BAD_WEATHER -> startBadWeather(session, seconds);
+            case METEOR_SHOWER -> startMeteorShower(session);
+            case CREEPER_PARTY -> startCreeperParty(session);
         }
 
-        getLogger().info("Ивент " + type.title + " запущен на " + seconds + "с в мире " + world.getName());
+        getLogger().info("Ивент " + type.title + " запущен на " + seconds + "с в мире " + world.getName()
+                + " (всего активных: " + sessions.size() + ")");
         return true;
     }
 
-    private void tickBar() {
-        if (activeEvent == null || activeBar == null) return;
-        long left = eventEndMillis - System.currentTimeMillis();
-        if (left <= 0) { stopEvent(false); return; }
-        int secondsLeft = (int) Math.ceil(left / 1000.0);
-        double progress = Math.max(0.0, Math.min(1.0, (double) secondsLeft / (double) eventTotalSeconds));
-        activeBar.setProgress(progress);
-        activeBar.setTitle(activeEvent.format + activeEvent.title + " §7— §f" + formatTime(secondsLeft));
-        syncBarPlayers();
+    private boolean isActive(EventType type) {
+        return sessions.containsKey(type);
     }
 
-    private void syncBarPlayers() {
-        if (activeBar == null || activeWorld == null) return;
+    /** Мир любого идущего ивента — для статуса и подсказок. */
+    private World anyEventWorld() {
+        for (EventSession s : sessions.values()) return s.world;
+        return null;
+    }
+
+    /** Строка вида «Плохая Погода, Крипер Пати» для статуса. */
+    private String activeEventsLine() {
+        StringBuilder sb = new StringBuilder();
+        for (EventSession s : sessions.values()) {
+            if (sb.length() > 0) sb.append("§7, §f");
+            sb.append(s.type.title);
+        }
+        return sb.length() == 0 ? "нет" : sb.toString();
+    }
+
+    private void ensureBarTask() {
+        if (barTask != null) return;
+        barTask = new BukkitRunnable() {
+            @Override public void run() { tickBars(); }
+        }.runTaskTimer(this, 20L, 20L);
+    }
+
+    private void tickBars() {
+        if (sessions.isEmpty()) {
+            if (barTask != null) { try { barTask.cancel(); } catch (Throwable ignored) {} barTask = null; }
+            return;
+        }
+        List<EventType> expired = new ArrayList<>();
+        for (EventSession s : new ArrayList<>(sessions.values())) {
+            long left = s.endMillis - System.currentTimeMillis();
+            if (left <= 0) { expired.add(s.type); continue; }
+            int secondsLeft = (int) Math.ceil(left / 1000.0);
+            double progress = Math.max(0.0, Math.min(1.0, (double) secondsLeft / (double) s.totalSeconds));
+            s.bar.setProgress(progress);
+            s.bar.setTitle(s.type.format + s.type.title + " §7— §f" + formatTime(secondsLeft));
+            syncBarPlayers(s);
+        }
+        for (EventType t : expired) stopEvent(t, false);
+    }
+
+    private void syncBarPlayers(EventSession s) {
+        if (s == null || s.bar == null || s.world == null) return;
         for (Player p : Bukkit.getOnlinePlayers()) {
-            if (p.getWorld().equals(activeWorld)) activeBar.addPlayer(p);
-            else activeBar.removePlayer(p);
+            if (p.getWorld().equals(s.world)) s.bar.addPlayer(p);
+            else s.bar.removePlayer(p);
         }
     }
 
@@ -517,31 +584,47 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         return String.format(Locale.US, "%d:%02d", m, s);
     }
 
-    private void stopEvent(boolean silent) {
-        EventType type = activeEvent;
-        World world = activeWorld;
-        if (barTask != null) { try { barTask.cancel(); } catch (Throwable ignored) {} barTask = null; }
-        if (actionTask != null) { try { actionTask.cancel(); } catch (Throwable ignored) {} actionTask = null; }
-        if (meteorTickTask != null) { try { meteorTickTask.cancel(); } catch (Throwable ignored) {} meteorTickTask = null; }
-        clearCreeperParty();
-        if (activeBar != null) { try { activeBar.removeAll(); activeBar.setVisible(false); } catch (Throwable ignored) {} activeBar = null; }
-        for (Entity meteor : new ArrayList<>(activeMeteors)) {
-            try { if (meteor.isValid()) meteor.remove(); } catch (Throwable ignored) {}
+    /** Остановить все идущие ивенты. */
+    private void stopAllEvents(boolean silent) {
+        for (EventType t : new ArrayList<>(sessions.keySet())) stopEvent(t, silent);
+    }
+
+    private void stopEvent(EventType type, boolean silent) {
+        EventSession s = sessions.remove(type);
+        if (s == null) return;
+        for (BukkitTask t : s.tasks) {
+            try { if (t != null) t.cancel(); } catch (Throwable ignored) {}
         }
-        activeMeteors.clear();
-        if (weatherRestore && world != null) {
-            try {
-                world.setThundering(false);
-                world.setStorm(false);
-                world.setWeatherDuration(0);
-                world.setClearWeatherDuration(20 * 60 * 10);
-            } catch (Throwable ignored) {}
-            weatherRestore = false;
+        s.tasks.clear();
+        try { s.bar.removeAll(); s.bar.setVisible(false); } catch (Throwable ignored) {}
+
+        switch (type) {
+            case BAD_WEATHER -> {
+                if (weatherRestore && s.world != null) {
+                    try {
+                        s.world.setThundering(false);
+                        s.world.setStorm(false);
+                        s.world.setWeatherDuration(0);
+                        s.world.setClearWeatherDuration(20 * 60 * 10);
+                    } catch (Throwable ignored) {}
+                }
+                weatherRestore = false;
+            }
+            case METEOR_SHOWER -> {
+                for (Entity meteor : new ArrayList<>(activeMeteors)) {
+                    try { if (meteor.isValid()) meteor.remove(); } catch (Throwable ignored) {}
+                }
+                activeMeteors.clear();
+            }
+            case CREEPER_PARTY -> clearCreeperParty();
         }
-        activeEvent = null;
-        activeWorld = null;
-        if (!silent && type != null && world != null) {
-            for (Player p : world.getPlayers()) {
+
+        if (sessions.isEmpty() && barTask != null) {
+            try { barTask.cancel(); } catch (Throwable ignored) {}
+            barTask = null;
+        }
+        if (!silent && s.world != null) {
+            for (Player p : s.world.getPlayers()) {
                 p.sendMessage("§7✦ Ивент «" + type.title + "» закончился.");
             }
             getLogger().info("Ивент " + type.title + " завершён.");
@@ -554,13 +637,13 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         long period = autoIntervalMinutes * 60L * 20L;
         autoTask = new BukkitRunnable() {
             @Override public void run() {
-                if (activeEvent != null) return;
+                if (sessions.size() >= autoMaxActive) return;
                 World w = resolveWorld();
                 if (w == null || w.getPlayers().isEmpty()) return;
                 List<EventType> pool = new ArrayList<>();
-                if (weatherEnabled) pool.add(EventType.BAD_WEATHER);
-                if (meteorEnabled) pool.add(EventType.METEOR_SHOWER);
-                if (creeperEnabled) pool.add(EventType.CREEPER_PARTY);
+                if (weatherEnabled && !isActive(EventType.BAD_WEATHER)) pool.add(EventType.BAD_WEATHER);
+                if (meteorEnabled && !isActive(EventType.METEOR_SHOWER)) pool.add(EventType.METEOR_SHOWER);
+                if (creeperEnabled && !isActive(EventType.CREEPER_PARTY)) pool.add(EventType.CREEPER_PARTY);
                 if (pool.isEmpty()) return;
                 startEvent(pool.get(random.nextInt(pool.size())), 0, null);
             }
@@ -569,7 +652,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     // =========================================================
     // ИВЕНТ 1: ПЛОХАЯ ПОГОДА (молния -> мутация Электрический)
     // =========================================================
-    private void startBadWeather(World world, int seconds) {
+    private void startBadWeather(EventSession session, int seconds) {
+        final World world = session.world;
         try {
             world.setStorm(true);
             world.setThundering(true);
@@ -578,9 +662,9 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             weatherRestore = true;
         } catch (Throwable ignored) {}
 
-        actionTask = new BukkitRunnable() {
+        session.tasks.add(new BukkitRunnable() {
             @Override public void run() {
-                if (activeEvent != EventType.BAD_WEATHER) { cancel(); return; }
+                if (!isActive(EventType.BAD_WEATHER)) { cancel(); return; }
                 try { world.setStorm(true); world.setThundering(true); } catch (Throwable ignored) {}
                 List<Entity> mobs = getSpawnerMobs();
                 if (mobs.isEmpty()) return;
@@ -592,7 +676,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                     strikeMob(target);
                 }
             }
-        }.runTaskTimer(this, weatherStrikeInterval, weatherStrikeInterval);
+        }.runTaskTimer(this, weatherStrikeInterval, weatherStrikeInterval));
     }
 
     private void strikeMob(Entity mob) {
@@ -614,22 +698,23 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     // =========================================================
     // ИВЕНТ 2: МЕТЕОРИТНЫЙ ДОЖДЬ (фаербол -> мутация Метеоритный)
     // =========================================================
-    private void startMeteorShower(World world) {
-        actionTask = new BukkitRunnable() {
+    private void startMeteorShower(EventSession session) {
+        final World world = session.world;
+        session.tasks.add(new BukkitRunnable() {
             @Override public void run() {
-                if (activeEvent != EventType.METEOR_SHOWER) { cancel(); return; }
+                if (!isActive(EventType.METEOR_SHOWER)) { cancel(); return; }
                 double[] box = getRegionBounds(world);
                 if (box == null) return;
                 for (int i = 0; i < meteorPerWave; i++) spawnMeteor(world, box);
             }
-        }.runTaskTimer(this, 20L, meteorWaveInterval);
+        }.runTaskTimer(this, 20L, meteorWaveInterval));
 
-        meteorTickTask = new BukkitRunnable() {
+        session.tasks.add(new BukkitRunnable() {
             @Override public void run() {
-                if (activeEvent != EventType.METEOR_SHOWER) { cancel(); return; }
+                if (!isActive(EventType.METEOR_SHOWER)) { cancel(); return; }
                 tickMeteors();
             }
-        }.runTaskTimer(this, 1L, 1L);
+        }.runTaskTimer(this, 1L, 1L));
     }
 
     private void spawnMeteor(World world, double[] box) {
@@ -711,7 +796,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     // =========================================================
     // ИВЕНТ 3: КРИПЕР ПАТИ (крипер добегает и взрывает -> мутация Взрывной)
     // =========================================================
-    private void startCreeperParty(World world) {
+    private void startCreeperParty(EventSession session) {
+        final World world = session.world;
         partyCreeperSpots.clear();
         int minX = Math.min(creeperMinX, creeperMaxX);
         int maxX = Math.max(creeperMinX, creeperMaxX);
@@ -726,7 +812,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         // Прыжки: все криперы синхронно подпрыгивают.
         creeperJumpTask = new BukkitRunnable() {
             @Override public void run() {
-                if (activeEvent != EventType.CREEPER_PARTY) { cancel(); return; }
+                if (!isActive(EventType.CREEPER_PARTY)) { cancel(); return; }
                 for (Entity c : new ArrayList<>(partyCreepers)) {
                     if (c == null || !c.isValid()) continue;
                     if (creeperCharges.containsKey(c)) continue; // бегущий не прыгает
@@ -739,21 +825,22 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 }
             }
         }.runTaskTimer(this, creeperJumpInterval, creeperJumpInterval);
+        session.tasks.add(creeperJumpTask);
 
         // Выбор жертвы.
-        actionTask = new BukkitRunnable() {
+        session.tasks.add(new BukkitRunnable() {
             @Override public void run() {
-                if (activeEvent != EventType.CREEPER_PARTY) { cancel(); return; }
+                if (!isActive(EventType.CREEPER_PARTY)) { cancel(); return; }
                 if (creeperCharges.size() >= creeperMaxCharges) return;
                 if (random.nextDouble() > creeperChargeChance) return;
                 launchCreeperCharge(world);
             }
-        }.runTaskTimer(this, 40L, creeperChargeInterval);
+        }.runTaskTimer(this, 40L, creeperChargeInterval));
 
         // Добор пропавших криперов.
         creeperRefillTask = new BukkitRunnable() {
             @Override public void run() {
-                if (activeEvent != EventType.CREEPER_PARTY) { cancel(); return; }
+                if (!isActive(EventType.CREEPER_PARTY)) { cancel(); return; }
                 partyCreepers.removeIf(c -> c == null || !c.isValid());
                 if (partyCreepers.size() >= partyCreeperSpots.size()) return;
                 for (Location spot : partyCreeperSpots) {
@@ -766,6 +853,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 }
             }
         }.runTaskTimer(this, creeperRespawnDelay, creeperRespawnDelay);
+        session.tasks.add(creeperRefillTask);
     }
 
     private void spawnPartyCreeper(Location spot) {
@@ -854,7 +942,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         BukkitTask task = new BukkitRunnable() {
             int ticks = 0;
             @Override public void run() {
-                if (activeEvent != EventType.CREEPER_PARTY || !creeper.isValid()) { finish(); return; }
+                if (!isActive(EventType.CREEPER_PARTY) || !creeper.isValid()) { finish(); return; }
                 if (finalTarget == null || !finalTarget.isValid() || ++ticks > creeperChargeTimeout) {
                     fizzleCreeper(creeper);
                     finish();
@@ -1075,7 +1163,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
      * и игрок не видел ни босс-бара, ни дождя, ни метеоритов.
      */
     private World resolveWorld(CommandSender starter) {
-        if (activeWorld != null) return activeWorld;
+        World running = anyEventWorld();
+        if (running != null) return running;
         if (eventsWorldName != null && !eventsWorldName.isEmpty()) {
             World w = Bukkit.getWorld(eventsWorldName);
             if (w != null) return w;
@@ -1160,7 +1249,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             event.setCancelled(true);
             return;
         }
-        if (activeEvent == EventType.BAD_WEATHER
+        if (isActive(EventType.BAD_WEATHER)
                 && (cause == EntityDamageEvent.DamageCause.FIRE || cause == EntityDamageEvent.DamageCause.FIRE_TICK)) {
             event.setCancelled(true);
         }
@@ -1199,7 +1288,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         BlockIgniteEvent.IgniteCause cause = event.getCause();
         if (cause == BlockIgniteEvent.IgniteCause.LIGHTNING) { event.setCancelled(true); return; }
         if (isMeteor(event.getIgnitingEntity())) event.setCancelled(true);
-        else if (activeEvent == EventType.METEOR_SHOWER && cause == BlockIgniteEvent.IgniteCause.FIREBALL) {
+        else if (isActive(EventType.METEOR_SHOWER) && cause == BlockIgniteEvent.IgniteCause.FIREBALL) {
             event.setCancelled(true);
         }
     }
@@ -1227,7 +1316,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
 
     @EventHandler(priority = EventPriority.HIGH)
     public void onNaturalLightning(LightningStrikeEvent event) {
-        if (activeEvent != EventType.BAD_WEATHER) return;
+        if (!isActive(EventType.BAD_WEATHER)) return;
         if (event.getCause() == LightningStrikeEvent.Cause.WEATHER) event.setCancelled(true);
     }
     // =========================================================
@@ -1281,7 +1370,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                     sender.sendMessage("§eМузыка: " + (musicEnabled ? "§aвкл" : "§cвыкл")
                             + " §7| трек §f" + soundKey + " §7| длина §f" + trackLengthSeconds + "с"
                             + " §7| активных циклов §f" + playerLoops.size());
-                    sender.sendMessage("§eИвент: " + (activeEvent == null ? "§7нет" : "§f" + activeEvent.title));
+                    sender.sendMessage("§eИвенты: " + (sessions.isEmpty() ? "§7нет" : "§f" + activeEventsLine()));
                 }
                 default -> sender.sendMessage("§cНеизвестная подкоманда. Напиши /" + label + " без аргументов.");
             }
@@ -1311,8 +1400,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 return true;
             }
             if (args.length == 0) {
-                sender.sendMessage("§6/" + label + " start <badweather|meteor|creeper> [секунды]");
-                sender.sendMessage("§6/" + label + " stop §7— остановить текущий ивент");
+                sender.sendMessage("§6/" + label + " start <badweather|meteor|creeper> [секунды] §7— можно запускать несколько сразу");
+                sender.sendMessage("§6/" + label + " stop [badweather|meteor|creeper] §7— остановить один или все");
                 sender.sendMessage("§6/" + label + " status §7— что сейчас идёт");
                 sender.sendMessage("§6/" + label + " reload §7— перечитать конфиг");
                 return true;
@@ -1332,13 +1421,21 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                     }
                 }
                 case "stop" -> {
-                    if (activeEvent == null) { sender.sendMessage("§7Сейчас нет активного ивента."); return true; }
-                    String name = activeEvent.title;
-                    stopEvent(false);
-                    sender.sendMessage("§aИвент «" + name + "» остановлен.");
+                    if (sessions.isEmpty()) { sender.sendMessage("§7Сейчас нет активных ивентов."); return true; }
+                    if (args.length >= 2) {
+                        EventType type = EventType.byKey(args[1]);
+                        if (type == null) { sender.sendMessage("§cНеизвестный ивент: " + args[1]); return true; }
+                        if (!isActive(type)) { sender.sendMessage("§7Ивент «" + type.title + "» не идёт."); return true; }
+                        stopEvent(type, false);
+                        sender.sendMessage("§aИвент «" + type.title + "» остановлен.");
+                        return true;
+                    }
+                    String all = activeEventsLine();
+                    stopAllEvents(false);
+                    sender.sendMessage("§aОстановлено: §f" + all);
                 }
                 case "status" -> {
-                    World w = activeWorld != null ? activeWorld : resolveWorld(sender);
+                    World w = anyEventWorld() != null ? anyEventWorld() : resolveWorld(sender);
                     sender.sendMessage("§7Мир ивентов: §f" + (w != null ? w.getName() : "?")
                             + " §7(events.world = §f" + (eventsWorldName.isEmpty() ? "авто" : eventsWorldName) + "§7)");
                     sender.sendMessage("§7Спавнер подключён: " + (getSpawnerPlugin() != null ? "§aда" : "§cнет")
@@ -1348,16 +1445,21 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                         sender.sendMessage("§7Область метеоритов: §f" + (box == null ? "не определена"
                                 : String.format(Locale.US, "%.0f,%.0f → %.0f,%.0f", box[0], box[1], box[2], box[3])));
                     }
-                    if (activeEvent == null) { sender.sendMessage("§7Активного ивента нет."); return true; }
-                    int left = (int) Math.max(0, Math.ceil((eventEndMillis - System.currentTimeMillis()) / 1000.0));
-                    sender.sendMessage("§eИдёт: " + activeEvent.title + " §7(осталось " + formatTime(left) + ")");
-                    if (activeEvent == EventType.METEOR_SHOWER) {
-                        sender.sendMessage("§7Метеоритов в воздухе: " + activeMeteors.size());
-                    }
-                    if (activeEvent == EventType.CREEPER_PARTY) {
-                        sender.sendMessage("§7Криперов в линии: §f" + partyCreepers.size()
-                                + " §7| бегут к цели: §f" + creeperCharges.size()
-                                + " §7| шанс на игрока: §f" + (int) Math.round(creeperPlayerChance * 100) + "%");
+                    if (sessions.isEmpty()) { sender.sendMessage("§7Активных ивентов нет."); return true; }
+                    sender.sendMessage("§eИдёт ивентов: §f" + sessions.size());
+                    for (EventSession s : new ArrayList<>(sessions.values())) {
+                        int left = (int) Math.max(0, Math.ceil((s.endMillis - System.currentTimeMillis()) / 1000.0));
+                        sender.sendMessage(s.type.format + "• " + s.type.title + " §7(осталось " + formatTime(left) + ")");
+                        if (s.type == EventType.METEOR_SHOWER) {
+                            sender.sendMessage("§7  метеоритов в воздухе: §f" + activeMeteors.size());
+                        }
+                        if (s.type == EventType.CREEPER_PARTY) {
+                            sender.sendMessage("§7  криперов в линии: §f" + partyCreepers.size()
+                                    + " §7| бегут к цели: §f" + creeperCharges.size()
+                                    + " §7| кубик раз в §f" + creeperChargeInterval + " §7тиков с шансом §f"
+                                    + (int) Math.round(creeperChargeChance * 100) + "%"
+                                    + " §7| шанс на игрока: §f" + (int) Math.round(creeperPlayerChance * 100) + "%");
+                        }
                     }
                 }
                 case "reload" -> {
@@ -1379,7 +1481,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (args.length == 1) {
                 return filter(List.of("start", "stop", "status", "reload"), args[0]);
             }
-            if (args.length == 2 && args[0].equalsIgnoreCase("start")) {
+            if (args.length == 2 && (args[0].equalsIgnoreCase("start") || args[0].equalsIgnoreCase("stop"))) {
                 return filter(List.of("badweather", "meteor", "creeper"), args[1]);
             }
             if (args.length == 3 && args[0].equalsIgnoreCase("start")) {

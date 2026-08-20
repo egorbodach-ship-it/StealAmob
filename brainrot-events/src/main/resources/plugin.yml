@@ -10,7 +10,7 @@ commands:
     usage: /brainrotmusic <on|off|restart|reload|status>
   brainrotevent:
     description: Manage Brainrot world events
-    usage: /brainrotevent <start|stop|status|reload>
+    usage: /brainrotevent <start <badweather|meteor|creeper> [sec] | stop [event] | status | reload>
     aliases: [brevent, brainrotevents]
 permissions:
   brainrotevents.admin:
