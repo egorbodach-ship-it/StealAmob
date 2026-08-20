@@ -142,7 +142,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private static final String DRAGON_CARRIER_TAG = "BRAINROT_DRAGON_CARRIER";
     private static final double DRAGON_CARRIER_Y_OFFSET = 0.0;
     // Разворот модели дракона относительно направления конвейера (config: dragon.yaw-offset).
-    private float dragonYawOffset = 0.0f;
+    private float dragonYawOffset = -90.0f;
 
     private final Map<Entity, Entity> rotWalkerHitboxMap = new HashMap<>();
     private final Map<Entity, BukkitRunnable> rotWalkerAnimTasks = new HashMap<>();
@@ -941,10 +941,10 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private void loadConfigSettings() {
         FileConfiguration cfg = getConfig();
         if (!cfg.contains("dragon.yaw-offset")) {
-            cfg.set("dragon.yaw-offset", 0);
+            cfg.set("dragon.yaw-offset", -90);
             saveConfig();
         }
-        dragonYawOffset = (float) cfg.getDouble("dragon.yaw-offset", 0);
+        dragonYawOffset = (float) cfg.getDouble("dragon.yaw-offset", -90);
         if (cfg.contains("spawners")) {
             for (String id : cfg.getConfigurationSection("spawners").getKeys(false)) {
                 String path = "spawners." + id + ".";
@@ -2190,8 +2190,16 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             m4.invoke(plugin, baseName, point, col, type);
             Mutation mutation = mobMutations.getOrDefault(mob, Mutation.NONE);
             boolean snowy = isSnowy(mob);
-            if (mutation != Mutation.NONE || snowy) {
-                final String finalMutationName = mutation.name();
+            // Стакающиеся мутации (кроме снежного, он едет отдельным флагом) кодируем как "GOLD+ELECTRIC".
+            StringBuilder mutName = new StringBuilder(mutation.name());
+            boolean hasExtras = false;
+            for (Mutation extra : getExtraMutations(mob)) {
+                if (extra == Mutation.SNOWY) continue;
+                mutName.append('+').append(extra.name());
+                hasExtras = true;
+            }
+            if (mutation != Mutation.NONE || snowy || hasExtras) {
+                final String finalMutationName = mutName.toString();
                 final String finalPoint = point;
                 Bukkit.getScheduler().runTaskLater(this, () -> {
                     try {

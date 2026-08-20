@@ -234,7 +234,10 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
                 ItemMeta m = item.getItemMeta();
                 m.setDisplayName("§e" + type);
                 List<String> l = new ArrayList<>();
-                if (!mut.equals("NONE")) l.add("§7Мутация: §d" + mut);
+                List<String> mutParts = new ArrayList<>();
+                if (!baseOf(mut).equals("NONE")) mutParts.add(baseOf(mut));
+                mutParts.addAll(extrasOf(mut));
+                if (!mutParts.isEmpty()) l.add("§7Мутация: §d" + String.join(" §7+ §d", mutParts));
                 if (snow) l.add("§b❄ Снежный");
                 if (type.equals("SPONGE")) {
                     l.add("§7Лаки-Блок:");
@@ -309,6 +312,14 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
             if (e.getSlot() == 15) { modifyMob(admin, targetName, mobIndex, "SET_MUTATION", "GOLD"); }
             if (e.getSlot() == 16) { modifyMob(admin, targetName, mobIndex, "SET_MUTATION", "DIAMOND"); }
             if (e.getSlot() == 17) { modifyMob(admin, targetName, mobIndex, "SET_MUTATION", "RAINBOW"); }
+            // Переключатели мутаций возвращают в редактор, чтобы можно было навесить сразу несколько.
+            if (e.getSlot() == 19 || e.getSlot() == 20 || e.getSlot() == 21) {
+                if (e.getSlot() == 19) modifyMob(admin, targetName, mobIndex, "TOGGLE_SNOWY", null);
+                else if (e.getSlot() == 20) modifyMob(admin, targetName, mobIndex, "TOGGLE_EXTRA", "ELECTRIC");
+                else modifyMob(admin, targetName, mobIndex, "TOGGLE_EXTRA", "METEOR");
+                Bukkit.getScheduler().runTaskLater(this, () -> openMobEditMenu(admin, mobIndex), 15L);
+                return;
+            }
             if (e.getSlot() == 22) { openProfile(admin, targetName); return; }
             
             Bukkit.getScheduler().runTaskLater(this, () -> openProfile(admin, targetName), 10L);
@@ -338,11 +349,24 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
         String type = cfg.getString("mobs." + targetName + "." + index + ".mobType", "CHICKEN");
         
         Inventory inv = Bukkit.createInventory(null, 27, "§8Редактор моба (" + index + ")");
+        String curMut = cfg.getString("mobs." + targetName + "." + index + ".mutation", "NONE");
+        if (curMut == null || curMut.isEmpty()) curMut = "NONE";
+        boolean curSnowy = cfg.getBoolean("mobs." + targetName + "." + index + ".snowy", false);
+        List<String> curExtras = extrasOf(curMut);
         inv.setItem(11, createItem(Material.REDSTONE_BLOCK, "§cУдалить моба"));
         inv.setItem(13, createItem(Material.MILK_BUCKET, "§fСнять мутации"));
         inv.setItem(15, createItem(Material.GOLD_INGOT, "§6Сделать Золотым"));
         inv.setItem(16, createItem(Material.DIAMOND, "§bСделать Алмазным"));
         inv.setItem(17, createItem(Material.NETHER_STAR, "§dСделать Радужным"));
+        inv.setItem(19, createItem(Material.POWDER_SNOW_BUCKET, "§bСнежный §7(×5)",
+                "§7Сейчас: " + (curSnowy ? "§aвключён" : "§cвыключен"),
+                "§eНажмите, чтобы переключить"));
+        inv.setItem(20, createItem(Material.LIGHTNING_ROD, "§eЭлектрический §7(×3)",
+                "§7Сейчас: " + (curExtras.contains("ELECTRIC") ? "§aвключён" : "§cвыключен"),
+                "§eНажмите, чтобы переключить"));
+        inv.setItem(21, createItem(Material.FIRE_CHARGE, "§cМетеоритный §7(×4)",
+                "§7Сейчас: " + (curExtras.contains("METEOR") ? "§aвключён" : "§cвыключен"),
+                "§eНажмите, чтобы переключить"));
         
         if (type.equals("SPONGE")) {
             boolean isReady = cfg.getBoolean("mobs." + targetName + "." + index + ".luckyBlockReady", false);
@@ -420,9 +444,29 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
                 admin.sendMessage("§aМутации сняты.");
             }
             else if (action.equals("SET_MUTATION")) {
+                // Базовую мутацию меняем, стакающиеся (Электрический/Метеоритный) и Снежный сохраняем.
+                String[] cur = readMobMutation(targetName, index);
+                String code = buildMutationCode(arg, extrasOf(cur[0]));
                 Method m = bb.getClass().getMethod("adminSetMutation", String.class, int.class, String.class, boolean.class);
-                m.invoke(bb, targetName, index, arg, false);
+                m.invoke(bb, targetName, index, code, Boolean.parseBoolean(cur[1]));
                 admin.sendMessage("§aМутация " + arg + " установлена.");
+            }
+            else if (action.equals("TOGGLE_EXTRA")) {
+                String[] cur = readMobMutation(targetName, index);
+                String base = baseOf(cur[0]);
+                List<String> extras = new ArrayList<>(extrasOf(cur[0]));
+                boolean had = extras.remove(arg);
+                if (!had) extras.add(arg);
+                Method m = bb.getClass().getMethod("adminSetMutation", String.class, int.class, String.class, boolean.class);
+                m.invoke(bb, targetName, index, buildMutationCode(base, extras), Boolean.parseBoolean(cur[1]));
+                admin.sendMessage("§aМутация " + arg + (had ? " §cснята." : " §aдобавлена."));
+            }
+            else if (action.equals("TOGGLE_SNOWY")) {
+                String[] cur = readMobMutation(targetName, index);
+                boolean snowy = !Boolean.parseBoolean(cur[1]);
+                Method m = bb.getClass().getMethod("adminSetMutation", String.class, int.class, String.class, boolean.class);
+                m.invoke(bb, targetName, index, cur[0], snowy);
+                admin.sendMessage("§aСнежный " + (snowy ? "§aдобавлен." : "§cснят."));
             }
             
             Player target = Bukkit.getPlayer(targetName);
@@ -432,6 +476,43 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
             admin.sendMessage("§cОшибка API: " + e.getMessage());
             org.bukkit.Bukkit.getLogger().warning("Brainrot: " + e.getMessage());
         }
+    }
+
+    /** Стакающиеся мутации, которые можно навесить поверх базовой. */
+    private static final List<String> STACKABLE_MUTATIONS = Arrays.asList("ELECTRIC", "METEOR");
+
+    /** Возвращает [строка мутаций, snowy] текущего моба из mobs.yml. */
+    private String[] readMobMutation(String targetName, int index) {
+        forceSavePlayerMobs(targetName);
+        File f = new File("plugins/brainrotBases/mobs.yml");
+        YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
+        String path = "mobs." + targetName + "." + index;
+        String mut = cfg.getString(path + ".mutation", "NONE");
+        if (mut == null || mut.isEmpty()) mut = "NONE";
+        boolean snowy = cfg.getBoolean(path + ".snowy", false);
+        return new String[]{ mut, String.valueOf(snowy) };
+    }
+
+    private String baseOf(String code) {
+        if (code == null || code.isEmpty()) return "NONE";
+        String first = code.split("\\+")[0].trim();
+        return first.isEmpty() ? "NONE" : first.toUpperCase();
+    }
+
+    private List<String> extrasOf(String code) {
+        List<String> out = new ArrayList<>();
+        if (code == null) return out;
+        for (String part : code.split("\\+")) {
+            String token = part.trim().toUpperCase();
+            if (STACKABLE_MUTATIONS.contains(token) && !out.contains(token)) out.add(token);
+        }
+        return out;
+    }
+
+    private String buildMutationCode(String base, List<String> extras) {
+        StringBuilder sb = new StringBuilder(base == null || base.isEmpty() ? "NONE" : base.toUpperCase());
+        if (extras != null) for (String e : extras) sb.append('+').append(e);
+        return sb.toString();
     }
 
     private void addMob(Player admin, String targetName, String type) {

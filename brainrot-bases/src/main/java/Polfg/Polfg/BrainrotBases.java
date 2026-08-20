@@ -261,6 +261,8 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         String collectorId;
         Mutation mutation;
         boolean snowy;
+        /** Мутации в виде строки "GOLD+ELECTRIC" — чтобы не потерять стакающиеся при переносе. */
+        String mutationCode;
         StealingData(Player player, Entity mob, String originalBase, Location originalLocation) {
             this.player = player;
             this.mob = mob;
@@ -271,6 +273,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             this.collectorId = null;
             this.mutation = Mutation.NONE;
             this.snowy = false;
+            this.mutationCode = Mutation.NONE.name();
         }
     }
     private boolean debug = false;
@@ -501,7 +504,43 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         boolean snowy = baseMobSnowy.getOrDefault(mob, false);
         double mult = base.incomeMultiplier;
         if (snowy) mult *= Mutation.SNOWY.incomeMultiplier;
+        for (Mutation extra : Mutation.extrasFromEntity(mob)) mult *= extra.incomeMultiplier;
         return mult;
+    }
+    /** Приписка со стакающимися мутациями (Электрический/Метеоритный), например " §7+ §eЭлектрический". */
+    private String getExtrasDisplaySuffix(Entity mob, boolean hasSomethingBefore) {
+        List<Mutation> extras = Mutation.extrasFromEntity(mob);
+        if (extras.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        boolean before = hasSomethingBefore;
+        for (Mutation extra : extras) {
+            if (before) sb.append(" §7+ ");
+            sb.append(extra.format).append(extra.displayName);
+            before = true;
+        }
+        return sb.toString();
+    }
+    /** Приписка вида "§7+§e×3" со множителями стакающихся мутаций. */
+    private String getExtrasMultiplierSuffix(Entity mob, boolean hasSomethingBefore) {
+        List<Mutation> extras = Mutation.extrasFromEntity(mob);
+        if (extras.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        boolean before = hasSomethingBefore;
+        for (Mutation extra : extras) {
+            if (before) sb.append("§7+");
+            sb.append(extra.format).append("×").append(String.format("%.0f", extra.incomeMultiplier));
+            before = true;
+        }
+        return sb.toString();
+    }
+    /** Полная строка мутаций моба: базовая + снежный + стакающиеся. */
+    private String getMutationDisplayLine(Entity mob, Mutation mutation, boolean snowy) {
+        String head = getMutationDisplayLine(mutation, snowy);
+        return head + getExtrasDisplaySuffix(mob, !head.isEmpty());
+    }
+    /** Есть ли у моба вообще какая-нибудь мутация (с учётом стакающихся). */
+    private boolean hasAnyMutation(Entity mob, Mutation mutation, boolean snowy) {
+        return (mutation != null && mutation != Mutation.NONE) || snowy || !Mutation.extrasFromEntity(mob).isEmpty();
     }
     private String getMutationDisplayLine(Mutation mutation, boolean snowy) {
         StringBuilder sb = new StringBuilder();
@@ -537,6 +576,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         }
         final Mutation lbMutation = baseMobMutations.getOrDefault(luckyBlock, Mutation.NONE);
         final boolean lbSnowy = baseMobSnowy.getOrDefault(luckyBlock, false);
+        final String lbMutationCode = serializeMobMutation(luckyBlock);
         final float fixedYaw = luckyBlock.getLocation().getYaw();
         animatingPoints.add(mobPoint);
         String uniqTag = luckyBlockTags.remove(luckyBlock);
@@ -709,10 +749,13 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                         freeCol = findFreeCollectorForBase(finalBase, colPoints);
                     }
                     spawnMobAtPointExact(finalBase, finalMobPoint, freeCol, wonMob);
-                    if (lbMutation != Mutation.NONE || lbSnowy) {
-                        applyMutationToPoint(finalBase, finalMobPoint, lbMutation.name(), lbSnowy);
+                    if (lbMutation != Mutation.NONE || lbSnowy || !Mutation.extrasFromName(lbMutationCode).isEmpty()) {
+                        applyMutationToPoint(finalBase, finalMobPoint, lbMutationCode, lbSnowy);
                         String mutName = lbMutation == Mutation.NONE ? "" : lbMutation.displayName;
                         if (lbSnowy) mutName += (mutName.isEmpty() ? "" : " ") + Mutation.SNOWY.displayName;
+                        for (Mutation extra : Mutation.extrasFromName(lbMutationCode)) {
+                            mutName += (mutName.isEmpty() ? "" : " ") + extra.displayName;
+                        }
                         player.sendMessage(color("§a✨ Моб унаследовал мутацию: " + mutName + "!"));
                     }
                     if (wonMob == MobType.WARDEN) {
@@ -761,8 +804,8 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                 Mutation mutation = baseMobMutations.getOrDefault(mob, Mutation.NONE);
                 boolean snowy = baseMobSnowy.getOrDefault(mob, false);
                 List<String> lines = new ArrayList<>();
-                if (mutation != Mutation.NONE || snowy) {
-                    lines.add(color(getMutationDisplayLine(mutation, snowy)));
+                if (hasAnyMutation(mob, mutation, snowy)) {
+                    lines.add(color(getMutationDisplayLine(mob, mutation, snowy)));
                 }
                 if (remaining <= 0) {
                     luckyBlockReady.put(mob, true);
@@ -2016,7 +2059,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         boolean snowy = baseMobSnowy.getOrDefault(entity, false);
         double mutMult = getMobMutationMultiplier(entity);
         double actualIncome = type.baseIncome * mutMult;
-        boolean hasMutation = (mutation != Mutation.NONE) || snowy;
+        boolean hasMutation = hasAnyMutation(entity, mutation, snowy);
         Inventory menu = Bukkit.createInventory(null, 27, color("&6&lПродажа моба"));
         ItemStack grayGlass = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
         ItemMeta grayMeta = grayGlass.getItemMeta();
@@ -2029,7 +2072,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         ItemMeta infoMeta = info.getItemMeta();
         String title = "&f&l" + type.name;
         if (hasMutation) {
-            String mutPrefix = getMutationDisplayLine(mutation, snowy);
+            String mutPrefix = getMutationDisplayLine(entity, mutation, snowy);
             if (!mutPrefix.isEmpty()) title = mutPrefix + " " + title;
         }
         infoMeta.setDisplayName(color(title));
@@ -2043,6 +2086,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                 if (!mutDisplay.isEmpty()) mutDisplay += " §7+ ";
                 mutDisplay += Mutation.SNOWY.format + Mutation.SNOWY.displayName;
             }
+            mutDisplay += getExtrasDisplaySuffix(entity, !mutDisplay.isEmpty());
             lore.add(color("&7Мутация: " + mutDisplay));
             lore.add(color("&7Множитель: &e×" + String.format("%.1f", mutMult)));
         }
@@ -2404,6 +2448,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         StealingData data = new StealingData(player, mob, originalBase, originalLoc);
         data.mutation = baseMobMutations.getOrDefault(mob, Mutation.NONE);
         data.snowy = baseMobSnowy.getOrDefault(mob, false);
+        data.mutationCode = serializeMobMutation(mob);
         stealingPlayers.put(player, data);
         {
             String __apoint = entityToPointMap.get(mob);
@@ -2727,12 +2772,12 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             List<String> colPoints = baseCollectorPoints.get(playerBase);
             String freeCol = findFreeCollectorForBase(playerBase, colPoints);
             spawnMobAtPoint(playerBase, freePoint, freeCol, MobType.SPONGE);
-            if (data.mutation != Mutation.NONE || data.snowy) {
+            if (data.mutation != Mutation.NONE || data.snowy || !Mutation.extrasFromName(data.mutationCode).isEmpty()) {
                 final String fPoint = freePoint;
-                final Mutation fMut = data.mutation;
+                final String fMut = data.mutationCode;
                 final boolean fSnowy = data.snowy;
                 Bukkit.getScheduler().runTaskLater(this, () -> {
-                    applyMutationToPoint(playerBase, fPoint, fMut.name(), fSnowy);
+                    applyMutationToPoint(playerBase, fPoint, fMut, fSnowy);
                 }, 5L);
             }
             player.setWalkSpeed(0.2f);
@@ -2787,12 +2832,12 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         List<String> colPoints = baseCollectorPoints.get(playerBase);
         String freeCol = findFreeCollectorForBase(playerBase, colPoints);
         spawnMobAtPoint(playerBase, freePoint, freeCol, type);
-        if (data.mutation != Mutation.NONE || data.snowy) {
+        if (data.mutation != Mutation.NONE || data.snowy || !Mutation.extrasFromName(data.mutationCode).isEmpty()) {
             final String fPoint = freePoint;
-            final Mutation fMut = data.mutation;
+            final String fMut = data.mutationCode;
             final boolean fSnowy = data.snowy;
             Bukkit.getScheduler().runTaskLater(this, () -> {
-                applyMutationToPoint(playerBase, fPoint, fMut.name(), fSnowy);
+                applyMutationToPoint(playerBase, fPoint, fMut, fSnowy);
             }, 5L);
         }
         player.setWalkSpeed(0.2f);
@@ -5572,6 +5617,7 @@ private boolean isBaseMob(Entity entity) {
                     baseMobSnowy.put(mob, true);
                     mob.addScoreboardTag("MUTATION_SNOWY");
                 }
+                applyExtraMutationTags(mob, mutationName);
                 MobType type = MobType.fromEntity(mob);
                 if (type != null) {
                     removeMobHologram(mob);
@@ -5584,6 +5630,18 @@ private boolean isBaseMob(Entity entity) {
                 return;
             }
         }
+    }
+    /** Навешивает теги стакающихся мутаций из строки вида "GOLD+ELECTRIC+METEOR". */
+    private void applyExtraMutationTags(Entity mob, String mutationName) {
+        if (mob == null) return;
+        for (Mutation extra : Mutation.extrasFromName(mutationName)) {
+            mob.addScoreboardTag("MUTATION_" + extra.name());
+        }
+    }
+    /** Строка мутаций моба для сохранения: "GOLD+ELECTRIC" (снежный сохраняется отдельным флагом). */
+    private String serializeMobMutation(Entity mob) {
+        Mutation base = baseMobMutations.getOrDefault(mob, Mutation.NONE);
+        return Mutation.serialize(base, Mutation.extrasFromEntity(mob));
     }
     private void spawnMobAtPointExact(String base, String mobPoint, String collectorPoint, MobType type) {
         if (base == null || mobPoint == null || type == null) {
@@ -5790,8 +5848,9 @@ private boolean isBaseMob(Entity entity) {
             if (saved.base.equals(base) && saved.mobPoint.equals(mobPoint)) {
                 Mutation mutation = Mutation.fromName(saved.mutation);
                 boolean snowy = saved.snowy;
-                debugLog("[MUT-DEBUG]   НАЙДЕНО! mutation=" + mutation + " snowy=" + snowy);
-                if (mutation == Mutation.NONE && !snowy) {
+                List<Mutation> extras = Mutation.extrasFromName(saved.mutation);
+                debugLog("[MUT-DEBUG]   НАЙДЕНО! mutation=" + mutation + " snowy=" + snowy + " extras=" + extras);
+                if (mutation == Mutation.NONE && !snowy && extras.isEmpty()) {
                     debugLog("[MUT-DEBUG]   Нет мутации, пропускаем");
                     return;
                 }
@@ -5803,6 +5862,7 @@ private boolean isBaseMob(Entity entity) {
                     baseMobSnowy.put(mob, true);
                     mob.addScoreboardTag("MUTATION_SNOWY");
                 }
+                applyExtraMutationTags(mob, saved.mutation);
                 MobType type = MobType.fromEntity(mob);
                 if (type != null) {
                     removeMobHologram(mob);
@@ -5821,7 +5881,8 @@ private boolean isBaseMob(Entity entity) {
         }
         debugLog("[MUT-DEBUG] applyMutationDirect: mutationName=" + mutationName + " snowy=" + snowy + " mob=" + mob.getType() + " dead=" + mob.isDead());
         Mutation mutation = Mutation.fromName(mutationName);
-        if (mutation == Mutation.NONE && !snowy) {
+        List<Mutation> directExtras = Mutation.extrasFromName(mutationName);
+        if (mutation == Mutation.NONE && !snowy && directExtras.isEmpty()) {
             debugLog("[MUT-DEBUG] applyMutationDirect: нет мутации, пропускаем");
             return;
         }
@@ -5835,6 +5896,7 @@ private boolean isBaseMob(Entity entity) {
             mob.addScoreboardTag("MUTATION_SNOWY");
             debugLog("[MUT-DEBUG] applyMutationDirect: установлен snowy");
         }
+        applyExtraMutationTags(mob, mutationName);
         MobType type = MobType.fromEntity(mob);
         if (type != null) {
             removeMobHologram(mob);
@@ -6638,7 +6700,7 @@ private boolean isBaseMob(Entity entity) {
         Mutation mutation = baseMobMutations.getOrDefault(mob, Mutation.NONE);
         boolean snowy = baseMobSnowy.getOrDefault(mob, false);
         double mutMult = getMobMutationMultiplier(mob);
-        boolean hasMutation = (mutation != Mutation.NONE) || snowy;
+        boolean hasMutation = hasAnyMutation(mob, mutation, snowy);
         double actualIncome = type.baseIncome * mutMult;
         List<String> lines = new ArrayList<>();
         if (type.isLuckyBlock()) {
@@ -6648,7 +6710,7 @@ private boolean isBaseMob(Entity entity) {
             lines.add(color("§6" + formatNumber(type.sellPrice) + "$"));
         } else if (type.isRotWalker()) {
             if (hasMutation) {
-                String mutLine = getMutationDisplayLine(mutation, snowy);
+                String mutLine = getMutationDisplayLine(mob, mutation, snowy);
                 if (!mutLine.isEmpty()) lines.add(color(mutLine));
             }
             lines.add(color("§2☣ §fГнилоход §2☣"));
@@ -6662,13 +6724,14 @@ private boolean isBaseMob(Entity entity) {
                     if (mutation != Mutation.NONE) incomeText += "§7+";
                     incomeText += Mutation.SNOWY.format + "×" + String.format("%.0f", Mutation.SNOWY.incomeMultiplier);
                 }
+                incomeText += getExtrasMultiplierSuffix(mob, mutation != Mutation.NONE || snowy);
                 incomeText += "§7)";
             }
             lines.add(color(incomeText));
             lines.add(color("§2" + formatNumber(type.sellPrice) + "$"));
         } else {
             if (hasMutation) {
-                String mutLine = getMutationDisplayLine(mutation, snowy);
+                String mutLine = getMutationDisplayLine(mob, mutation, snowy);
                 if (!mutLine.isEmpty()) {
                     lines.add(color(mutLine));
                 }
@@ -6689,6 +6752,7 @@ private boolean isBaseMob(Entity entity) {
                     if (mutation != Mutation.NONE) incomeText += "§7+";
                     incomeText += Mutation.SNOWY.format + "×" + String.format("%.0f", Mutation.SNOWY.incomeMultiplier);
                 }
+                incomeText += getExtrasMultiplierSuffix(mob, mutation != Mutation.NONE || snowy);
                 incomeText += "§7)";
             }
             lines.add(color(incomeText));
@@ -6740,9 +6804,11 @@ private boolean isBaseMob(Entity entity) {
                 int auctionOffset = (!lines.isEmpty() && ChatColor.stripColor(lines.get(0)).contains("АУКЦИОН")) ? 1 : 0;
                 int rainbowLineIndex = auctionOffset + (snowy ? 1 : 0);
                 if (rainbowLineIndex < lines.size()) {
-                    lines.set(rainbowLineIndex, color(getRainbowText("Радужный", offset)));
+                    lines.set(rainbowLineIndex, color(getRainbowText("Радужный", offset)
+                            + getExtrasDisplaySuffix(mob, true)));
                 }
                 double mutMult = Mutation.RAINBOW.incomeMultiplier * (snowy ? Mutation.SNOWY.incomeMultiplier : 1.0);
+                for (Mutation extra : Mutation.extrasFromEntity(mob)) mutMult *= extra.incomeMultiplier;
                 double actualIncome = type.baseIncome * mutMult;
                 for (int i = 0; i < lines.size(); i++) {
                     if (ChatColor.stripColor(lines.get(i)).contains("/сек")) {
@@ -6751,6 +6817,7 @@ private boolean isBaseMob(Entity entity) {
                         if (snowy) {
                             incomeText += " §7+ §b×5";
                         }
+                        incomeText += getExtrasMultiplierSuffix(mob, true);
                         lines.set(i, color(incomeText));
                         break;
                     }
@@ -6783,6 +6850,20 @@ private boolean isBaseMob(Entity entity) {
             case SNOWY -> {
                 if (tick % 4 == 0) {
                     world.spawnParticle(Particle.SNOWFLAKE, p, 2, 0.25, 0.25, 0.25, 0.0);
+                }
+            }
+            case ELECTRIC -> {
+                if (tick % 3 == 0) {
+                    world.spawnParticle(Particle.ELECTRIC_SPARK, p, 4, 0.3, 0.35, 0.3, 0.02);
+                }
+            }
+            case METEOR -> {
+                if (tick % 3 == 0) {
+                    world.spawnParticle(Particle.FLAME, p, 2, 0.28, 0.3, 0.28, 0.005);
+                }
+                if (tick % 10 == 0) {
+                    world.spawnParticle(Particle.LAVA, p, 1, 0.2, 0.2, 0.2, 0.0);
+                    world.spawnParticle(Particle.LARGE_SMOKE, p.clone().add(0, 0.3, 0), 1, 0.2, 0.1, 0.2, 0.01);
                 }
             }
             case RAINBOW -> {
@@ -6828,6 +6909,9 @@ private boolean isBaseMob(Entity entity) {
                 if (snowy) {
                     tickMutationParticlesBase(mob, Mutation.SNOWY, tick);
                 }
+                for (Mutation extra : Mutation.extrasFromEntity(mob)) {
+                    tickMutationParticlesBase(mob, extra, tick);
+                }
             }
         }, 0L, 1L);
     }
@@ -6851,6 +6935,20 @@ private boolean isBaseMob(Entity entity) {
             case SNOWY -> {
                 if (tick % 4 == 0) {
                     world.spawnParticle(Particle.SNOWFLAKE, p, 2, 0.25, 0.25, 0.25, 0.0);
+                }
+            }
+            case ELECTRIC -> {
+                if (tick % 3 == 0) {
+                    world.spawnParticle(Particle.ELECTRIC_SPARK, p, 4, 0.3, 0.35, 0.3, 0.02);
+                }
+            }
+            case METEOR -> {
+                if (tick % 3 == 0) {
+                    world.spawnParticle(Particle.FLAME, p, 2, 0.28, 0.3, 0.28, 0.005);
+                }
+                if (tick % 10 == 0) {
+                    world.spawnParticle(Particle.LAVA, p, 1, 0.2, 0.2, 0.2, 0.0);
+                    world.spawnParticle(Particle.LARGE_SMOKE, p.clone().add(0, 0.3, 0), 1, 0.2, 0.1, 0.2, 0.01);
                 }
             }
             case RAINBOW -> {
@@ -8697,7 +8795,8 @@ public List<String> getMobPoints(String baseName) {
             mobsConfig.set(path + ".collectorPoint", collectorPoint);
             Mutation mutation = baseMobMutations.getOrDefault(mob, Mutation.NONE);
             boolean snowy = baseMobSnowy.getOrDefault(mob, false);
-            mobsConfig.set(path + ".mutation", mutation.name());
+            String mutationSerialized = serializeMobMutation(mob);
+            mobsConfig.set(path + ".mutation", mutationSerialized);
             mobsConfig.set(path + ".snowy", snowy);
             long lbRemainingMs = -1L;
             boolean lbReady = false;
@@ -8730,9 +8829,9 @@ public List<String> getMobPoints(String baseName) {
                 }
             }
             if (type.isLuckyBlock()) {
-                inMemory.add(new SavedMobData(playerBase, mobPoint, collectorPoint, type, lbRemainingMs, lbReady, mutation.name(), snowy));
+                inMemory.add(new SavedMobData(playerBase, mobPoint, collectorPoint, type, lbRemainingMs, lbReady, mutationSerialized, snowy));
             } else {
-                inMemory.add(new SavedMobData(playerBase, mobPoint, collectorPoint, type, -1L, false, mutation.name(), snowy));
+                inMemory.add(new SavedMobData(playerBase, mobPoint, collectorPoint, type, -1L, false, mutationSerialized, snowy));
             }
             savedCount++;
         }

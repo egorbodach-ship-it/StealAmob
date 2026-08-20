@@ -120,8 +120,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private int autoIntervalMinutes = 20;
     private boolean weatherEnabled = true;
     private int weatherDuration = 180;
-    private int weatherStrikeInterval = 40;
-    private double weatherStrikeChance = 0.35;
+    private int weatherStrikeInterval = 60;
+    private double weatherStrikeChance = 0.18;
     private int weatherStrikesPerWave = 1;
     private boolean meteorEnabled = true;
     private int meteorDuration = 180;
@@ -215,8 +215,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         changed |= def("events.auto.interval-minutes", 20);
         changed |= def("events.bad-weather.enabled", true);
         changed |= def("events.bad-weather.duration-seconds", 180);
-        changed |= def("events.bad-weather.strike-interval-ticks", 40);
-        changed |= def("events.bad-weather.strike-chance", 0.35);
+        changed |= def("events.bad-weather.strike-interval-ticks", 60);
+        changed |= def("events.bad-weather.strike-chance", 0.18);
         changed |= def("events.bad-weather.strikes-per-wave", 1);
         changed |= def("events.meteor-shower.enabled", true);
         changed |= def("events.meteor-shower.duration-seconds", 180);
@@ -230,6 +230,18 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         changed |= def("events.region.min-z", 0);
         changed |= def("events.region.max-x", 0);
         changed |= def("events.region.max-z", 0);
+
+        // Миграция: у кого уже лежит конфиг с прежними (слишком частыми) молниями — переводим на новые числа.
+        if (cfg.getInt("events.config-version", 1) < 2) {
+            if (Math.abs(cfg.getDouble("events.bad-weather.strike-chance", 0.18) - 0.35) < 1.0E-6) {
+                cfg.set("events.bad-weather.strike-chance", 0.18);
+            }
+            if (cfg.getInt("events.bad-weather.strike-interval-ticks", 60) == 40) {
+                cfg.set("events.bad-weather.strike-interval-ticks", 60);
+            }
+            cfg.set("events.config-version", 2);
+            changed = true;
+        }
         if (changed) saveConfig();
 
         eventsWorldName      = cfg.getString("events.world", "");
@@ -237,8 +249,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         autoIntervalMinutes  = Math.max(1, cfg.getInt("events.auto.interval-minutes", 20));
         weatherEnabled       = cfg.getBoolean("events.bad-weather.enabled", true);
         weatherDuration      = Math.max(5, cfg.getInt("events.bad-weather.duration-seconds", 180));
-        weatherStrikeInterval= Math.max(5, cfg.getInt("events.bad-weather.strike-interval-ticks", 40));
-        weatherStrikeChance  = Math.min(1.0, Math.max(0.0, cfg.getDouble("events.bad-weather.strike-chance", 0.35)));
+        weatherStrikeInterval= Math.max(5, cfg.getInt("events.bad-weather.strike-interval-ticks", 60));
+        weatherStrikeChance  = Math.min(1.0, Math.max(0.0, cfg.getDouble("events.bad-weather.strike-chance", 0.18)));
         weatherStrikesPerWave= Math.max(1, cfg.getInt("events.bad-weather.strikes-per-wave", 1));
         meteorEnabled        = cfg.getBoolean("events.meteor-shower.enabled", true);
         meteorDuration       = Math.max(5, cfg.getInt("events.meteor-shower.duration-seconds", 180));
