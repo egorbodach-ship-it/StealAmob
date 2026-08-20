@@ -131,7 +131,8 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private final Map<Entity, List<ItemDisplay>> luckyBlockWings = new HashMap<>();
     private final Map<Entity, BukkitRunnable> wingAnimations = new HashMap<>();
 
-    private final Map<Entity, Boolean> mobSnowyCache = new HashMap<>();
+    // Кэш набора «стакающихся» мутаций (тегов) для перерисовки нейм-тегов при изменении.
+    private final Map<Entity, String> mobExtrasCache = new HashMap<>();
 
     // Клиент игнорирует обычные пакеты перемещения для Эндер Дракона (EnderDragon#lerpTo пустой),
     // поэтому дракон визуально стоит на месте, хотя на сервере он двигается. Обход: невидимый
@@ -140,6 +141,8 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private final Map<Entity, Entity> dragonCarriers = new HashMap<>();
     private static final String DRAGON_CARRIER_TAG = "BRAINROT_DRAGON_CARRIER";
     private static final double DRAGON_CARRIER_Y_OFFSET = 0.0;
+    // Разворот модели дракона относительно направления конвейера (модель смотрит «боком»).
+    private static final float DRAGON_YAW_OFFSET = 90.0f;
 
     private final Map<Entity, Entity> rotWalkerHitboxMap = new HashMap<>();
     private final Map<Entity, BukkitRunnable> rotWalkerAnimTasks = new HashMap<>();
@@ -151,7 +154,10 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         GOLD("Золотой", "§6", 1.25, 6),
         DIAMOND("Алмазный", "§b", 1.5, 1.8),
         RAINBOW("Радужный", "§f", 10.0, 0.2),
-        SNOWY("Снежный", "§b", 5.0, 0);
+        // Ивентовые (chance = 0 -> никогда не выпадают при спавне, выдаются извне).
+        SNOWY("Снежный", "§b", 5.0, 0),
+        ELECTRIC("Электрический", "§e", 3.0, 0),
+        METEOR("Метеоритный", "§c", 4.0, 0);
 
         final String displayName;
         final String format;
@@ -692,13 +698,17 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     }
 
     private void createNameTags(Entity mob, MobData data, double baseHeight, Mutation mutation) {
-        createNameTags(mob, data, baseHeight, mutation, isSnowy(mob));
+        createNameTags(mob, data, baseHeight, mutation, getExtraMutations(mob));
     }
 
     private void createNameTags(Entity mob, MobData data, double baseHeight, Mutation mutation, boolean snowy) {
+        createNameTags(mob, data, baseHeight, mutation, snowy ? List.of(Mutation.SNOWY) : List.of());
+    }
+
+    private void createNameTags(Entity mob, MobData data, double baseHeight, Mutation mutation, List<Mutation> extras) {
         List<ArmorStand> tags = new ArrayList<>();
         Location baseLoc = mob.getLocation().clone();
-        String[] lines = getNameTagLines(data, mutation, snowy);
+        String[] lines = getNameTagLines(data, mutation, extras);
         for (int i = 0; i < lines.length; i++) {
             double yOffset = baseHeight + ((lines.length - 1 - i) * NAME_TAG_LINE_HEIGHT);
             Location tagLoc = baseLoc.clone().add(0, yOffset, 0);
@@ -721,6 +731,11 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     }
 
     private String[] getNameTagLines(MobData data, Mutation baseMutation, boolean snowy) {
+        return getNameTagLines(data, baseMutation, snowy ? List.of(Mutation.SNOWY) : List.of());
+    }
+
+    private String[] getNameTagLines(MobData data, Mutation baseMutation, List<Mutation> extras) {
+        if (extras == null) extras = List.of();
         String namePrefix = "";
         String priceSuffix = "§6";
         if (data.rarity == Rarity.MYTHICAL) {
@@ -740,14 +755,14 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             priceSuffix = "§2";
         }
         double mult = (baseMutation != null ? baseMutation.incomeMultiplier : 1.0);
-        if (snowy) mult *= Mutation.SNOWY.incomeMultiplier;
+        for (Mutation extra : extras) mult *= extra.incomeMultiplier;
         long actualIncome = Math.round(data.incomePerSecond * mult);
         String nameLine = namePrefix + "§f" + data.displayName + (data.rarity == Rarity.MYTHICAL ? " §d✦" : data.rarity == Rarity.BRAINROT_GOD ? " §b✧" : data.rarity == Rarity.SECRET ? " §8☠" : "");
         String rarityLine = data.rarity.format + data.rarity.displayName;
         String incomeLine = "§a+" + formatNumber(actualIncome) + "§2$§a/сек";
         String priceLine = priceSuffix + formatNumber(data.price) + "$";
         List<String> out = new ArrayList<>();
-        if (snowy) out.add(Mutation.SNOWY.format + Mutation.SNOWY.displayName);
+        for (Mutation extra : extras) out.add(extra.format + extra.displayName);
         if (baseMutation != null && baseMutation != Mutation.NONE) {
             if (baseMutation == Mutation.RAINBOW) out.add("§fРадужный");
             else out.add(baseMutation.format + baseMutation.displayName);
@@ -760,17 +775,29 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     }
 
     private void startRainbowAnimation(Entity mob, MobData data) {
-        startRainbowAnimation(mob, data, isSnowy(mob));
+        startRainbowAnimation(mob, data, getExtraMutations(mob));
     }
 
     private void startRainbowAnimation(Entity mob, MobData data, boolean snowy) {
+        startRainbowAnimation(mob, data, snowy ? List.of(Mutation.SNOWY) : List.of());
+    }
+
+    private void startRainbowAnimation(Entity mob, MobData data, List<Mutation> extras) {
+        final List<Mutation> extraList = (extras == null) ? List.of() : extras;
         List<ArmorStand> tags = mobNameTags.get(mob);
         if (tags == null || tags.isEmpty()) return;
-        int rainbowIndex = snowy ? 1 : 0;
+        int rainbowIndex = extraList.size();
         int incomeIndex = tags.size() - 2;
         ArmorStand rainbowTag = (rainbowIndex < tags.size()) ? tags.get(rainbowIndex) : null;
         ArmorStand incomeTag = (incomeIndex < tags.size()) ? tags.get(incomeIndex) : null;
-        double mult = Mutation.RAINBOW.incomeMultiplier * (snowy ? Mutation.SNOWY.incomeMultiplier : 1.0);
+        double mult = Mutation.RAINBOW.incomeMultiplier;
+        StringBuilder extraSuffix = new StringBuilder();
+        for (Mutation extra : extraList) {
+            mult *= extra.incomeMultiplier;
+            extraSuffix.append(" §7+ ").append(extra.format).append("×")
+                    .append(trimMultiplier(extra.incomeMultiplier));
+        }
+        final String extraSuffixStr = extraSuffix.toString();
         long actualIncome = Math.round(data.incomePerSecond * mult);
         BukkitRunnable animTask = new BukkitRunnable() {
             int tick = 0;
@@ -786,7 +813,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                     rainbowTag.setCustomName(getRainbowText("Радужный", offset));
                 }
                 String incomeLine = "§a+" + formatNumber(actualIncome) + "§2$§a/сек §7(" + getRainbowText("×10", offset) + "§7)";
-                if (snowy) incomeLine += " §7+ §b×5";
+                incomeLine += extraSuffixStr;
                 if (incomeTag != null && incomeTag.isValid()) {
                     incomeTag.setCustomName(incomeLine);
                 }
@@ -820,6 +847,30 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         mob.addScoreboardTag("MUTATION_" + mutation.name());
     }
 
+    // Мутации, которые стакаются с базовой (выдаются ивентами, а не при спавне).
+    private static final List<Mutation> STACKABLE_MUTATIONS =
+            List.of(Mutation.SNOWY, Mutation.ELECTRIC, Mutation.METEOR);
+
+    /** Порядок фиксирован (Снежный, Электрический, Метеоритный) — от него зависит порядок строк нейм-тега. */
+    private List<Mutation> getExtraMutations(Entity mob) {
+        if (mob == null) return List.of();
+        Set<String> tags = mob.getScoreboardTags();
+        List<Mutation> out = new ArrayList<>();
+        for (Mutation m : STACKABLE_MUTATIONS) if (tags.contains("MUTATION_" + m.name())) out.add(m);
+        return out;
+    }
+
+    private String extrasKey(Entity mob) {
+        StringBuilder sb = new StringBuilder();
+        for (Mutation m : getExtraMutations(mob)) sb.append(m.name()).append(',');
+        return sb.toString();
+    }
+
+    private static String trimMultiplier(double mult) {
+        if (mult == Math.rint(mult)) return String.valueOf((long) mult);
+        return String.valueOf(mult);
+    }
+
     private void tickMutationParticles(Entity mob, Mutation mutation, long tick) {
         if (mutation == null || mutation == Mutation.NONE) return;
         Location p = mob.getLocation().add(0, 0.8, 0);
@@ -837,6 +888,18 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             case SNOWY -> {
                 if (tick % 4 == 0)
                     mob.getWorld().spawnParticle(Particle.SNOWFLAKE, p, 2, 0.25, 0.25, 0.25, 0.0);
+            }
+            case ELECTRIC -> {
+                if (tick % 3 == 0)
+                    mob.getWorld().spawnParticle(Particle.ELECTRIC_SPARK, p, 4, 0.3, 0.35, 0.3, 0.02);
+            }
+            case METEOR -> {
+                if (tick % 3 == 0)
+                    mob.getWorld().spawnParticle(Particle.FLAME, p, 2, 0.28, 0.3, 0.28, 0.005);
+                if (tick % 10 == 0) {
+                    mob.getWorld().spawnParticle(Particle.LAVA, p, 1, 0.2, 0.2, 0.2, 0.0);
+                    mob.getWorld().spawnParticle(Particle.LARGE_SMOKE, p.clone().add(0, 0.3, 0), 1, 0.2, 0.1, 0.2, 0.01);
+                }
             }
             case RAINBOW -> {
                 if (tick % 2 == 0) {
@@ -1049,11 +1112,12 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         }
         try {
             Entity mob = spawnLoc.getWorld().spawnEntity(spawnLoc, selectedMob.entityType);
-            if (selectedMob == MobData.ENDER_DRAGON) {
-                getLogger().info("[DRAGON] spawn ok: uuid=" + mob.getUniqueId() + " type=" + mob.getType()
-                        + " at " + String.format(Locale.US, "%.1f/%.1f/%.1f", spawnLoc.getX(), spawnLoc.getY(), spawnLoc.getZ()));
-            }
             setupMob(mob, selectedMob);
+            if (selectedMob == MobData.ENDER_DRAGON) {
+                // Ставим разворот в тот же тик, что и спавн: клиент получит его сразу
+                // в пакете добавления сущности, дальше он поддерживается в moveDragonRig.
+                applyDragonYaw(mob, getYawFromDirection(config.getDirection()) + DRAGON_YAW_OFFSET);
+            }
             double nameTagHeight = selectedMob.getEntityHeight() + 0.3;
             mobHoloHeights.put(mob, nameTagHeight);
             mobMutations.put(mob, mutation);
@@ -1243,7 +1307,10 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
 
     private void setupMob(Entity mob, MobData data) {
         if (mob instanceof LivingEntity living) {
-            living.setAI(false);
+            // Дракону ИИ НЕ выключаем: у NoAI-дракона ванилла жёстко ставит flapTime = 0.5,
+            // то есть крылья замирают. Вместо этого он висит в фазе HOVER и сидит пассажиром
+            // на невидимом носителе, поэтому сам никуда не улетает.
+            if (data != MobData.ENDER_DRAGON) living.setAI(false);
             living.setGravity(false);
             living.setInvulnerable(true);
             living.setSilent(true);
@@ -1283,7 +1350,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                     org.bukkit.attribute.AttributeInstance scale = living.getAttribute(org.bukkit.attribute.Attribute.SCALE);
                     if (scale != null) scale.setBaseValue(0.25);
                 } catch (Throwable ignored) {}
-                mob.addScoreboardTag("NO_DRAGON_AI");
+                mob.addScoreboardTag("DRAGON_RIG");
                 createDragonCarrier(mob);
             }
             mob.setTicksLived(1);
@@ -1356,7 +1423,60 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         if (!carrier.getPassengers().contains(dragon)) {
             try { carrier.addPassenger(dragon); } catch (Throwable ignored) {}
         }
+        applyDragonYaw(dragon, target.getYaw() + DRAGON_YAW_OFFSET);
         return moved;
+    }
+
+    /**
+     * Разворот дракона. Обычные пакеты вращения клиент для дракона игнорирует
+     * (EnderDragon#lerpTo пустой), но yHeadRot синхронизируется отдельным пакетом и именно
+     * из его истории рендерится модель. Поэтому ставим yaw через API каждый тик и раз в секунду
+     * страхуемся ванильной командой /rotate (она дергает forceSetRotation).
+     */
+    private void applyDragonYaw(Entity dragon, float yaw) {
+        final float norm = Location.normalizeYaw(yaw);
+        // Через рефлексию: setRotation в API появлялся в разных версиях, а CraftEntity.setRotation есть давно.
+        try {
+            Method m = dragon.getClass().getMethod("setRotation", float.class, float.class);
+            m.invoke(dragon, norm, 0f);
+        } catch (Throwable ignored) {}
+        try {
+            if (dragon.getTicksLived() % 20 == 0) {
+                String dim = dragon.getWorld().getKey().toString();
+                Bukkit.dispatchCommand(Bukkit.getConsoleSender(), String.format(Locale.US,
+                        "execute in %s run minecraft:rotate %s %.1f 0", dim, dragon.getUniqueId(), norm));
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private boolean isSpawnerDragon(Entity entity) {
+        if (entity == null) return false;
+        Entity e = entity;
+        if (e instanceof ComplexEntityPart part) e = part.getParent();
+        if (e.getType() != EntityType.ENDER_DRAGON) return false;
+        return mobDataMap.containsKey(e) || e.getScoreboardTags().contains("MOB_ENDER_DRAGON");
+    }
+
+    // С включенным ИИ ванильный дракон ломает блоки вокруг себя (checkWalls) — запрещаем.
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onDragonExplode(EntityExplodeEvent e) {
+        if (!isSpawnerDragon(e.getEntity())) return;
+        e.blockList().clear();
+        e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onDragonChangeBlock(org.bukkit.event.entity.EntityChangeBlockEvent e) {
+        if (isSpawnerDragon(e.getEntity())) e.setCancelled(true);
+    }
+
+    // ...и бьёт/отбрасывает игроков — тоже запрещаем.
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onDragonDamageOthers(EntityDamageByEntityEvent e) {
+        if (isSpawnerDragon(e.getDamager())) {
+            e.setDamage(0.0);
+            e.setCancelled(true);
+        }
     }
 
     private void removeDragonCarrier(Entity dragon) {
@@ -1393,10 +1513,9 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             }
             private void tickMove() {
                 tick++;
-                boolean snowNow = isSnowy(finalMob);
-                boolean snowOld = mobSnowyCache.getOrDefault(finalMob, false);
-                if (snowNow != snowOld) {
-                    mobSnowyCache.put(finalMob, snowNow);
+                String extrasNow = extrasKey(finalMob);
+                if (!extrasNow.equals(mobExtrasCache.getOrDefault(finalMob, ""))) {
+                    mobExtrasCache.put(finalMob, extrasNow);
                     refreshMobNameTags(finalMob);
                 }
                 if (!hasPlayersInWorld(config.getWorldName()) || !finalMob.isValid() || finalMob.isDead()) {
@@ -1407,7 +1526,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 }
                 Mutation base = mobMutations.getOrDefault(finalMob, Mutation.NONE);
                 tickMutationParticles(finalMob, base, tick);
-                if (isSnowy(finalMob)) tickMutationParticles(finalMob, Mutation.SNOWY, tick);
+                for (Mutation extra : getExtraMutations(finalMob)) tickMutationParticles(finalMob, extra, tick);
                 Vector dirVec = getDirectionVector(direction);
                 double baseY = spawnLoc.getY();
                 traveledDistance += speed;
@@ -1442,17 +1561,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                         finalMob.teleport(targetLoc);
                     }
                 } else if (mobData == MobData.ENDER_DRAGON) {
-                    boolean moved = moveDragonRig(finalMob, targetLoc);
-                    if (tick == 1 || tick == 20 || tick == 60) {
-                        Location cur = finalMob.getLocation();
-                        Entity carrier = dragonCarriers.get(finalMob);
-                        getLogger().info(String.format(Locale.US,
-                                "[DRAGON] tick=%d moved=%s carrier=%s riding=%s target=%.2f/%.2f/%.2f actual=%.2f/%.2f/%.2f",
-                                tick, moved, carrier != null && carrier.isValid(),
-                                carrier != null && carrier.getPassengers().contains(finalMob),
-                                targetLoc.getX(), targetLoc.getY(), targetLoc.getZ(),
-                                cur.getX(), cur.getY(), cur.getZ()));
-                    }
+                    moveDragonRig(finalMob, targetLoc);
                 } else {
                     finalMob.teleport(targetLoc);
                 }
@@ -1543,7 +1652,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             mobMutations.remove(mob);
             mobClickCooldown.remove(mob);
             mobDataMap.remove(mob);
-            mobSnowyCache.remove(mob);
+            mobExtrasCache.remove(mob);
             if (mob.getScoreboardTags().contains("ROT_WALKER_ANIMATED") || mob.getScoreboardTags().contains(ROT_WALKER_ROOT_TAG)) {
                 String uniq = getRotWalkerUniqTag(mob);
                 String dim = mob.getWorld().getKey().toString();
@@ -1849,13 +1958,13 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         MobData data = mobDataMap.get(mob);
         if (data == null) return;
         Mutation base = mobMutations.getOrDefault(mob, Mutation.NONE);
-        boolean snowy = isSnowy(mob);
+        List<Mutation> extras = getExtraMutations(mob);
         double h = mobHoloHeights.getOrDefault(mob, 2.0);
         removeNameTags(mob);
-        createNameTags(mob, data, h, base, snowy);
+        createNameTags(mob, data, h, base, extras);
         BukkitRunnable rb = rainbowAnimationTasks.remove(mob);
         if (rb != null) try { rb.cancel(); } catch (Exception ignored) {}
-        if (base == Mutation.RAINBOW) startRainbowAnimation(mob, data, snowy);
+        if (base == Mutation.RAINBOW) startRainbowAnimation(mob, data, extras);
     }
 
     private void sendMobToBase(Player player, Entity mob, MobData data) {
@@ -1898,10 +2007,9 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             @Override
             public void run() {
                 tick++;
-                boolean snowNow = isSnowy(mob);
-                boolean snowOld = mobSnowyCache.getOrDefault(mob, false);
-                if (snowNow != snowOld) {
-                    mobSnowyCache.put(mob, snowNow);
+                String extrasNow = extrasKey(mob);
+                if (!extrasNow.equals(mobExtrasCache.getOrDefault(mob, ""))) {
+                    mobExtrasCache.put(mob, extrasNow);
                     refreshMobNameTags(mob);
                 }
                 if (buyer == null || !buyer.isOnline()) { cleanupMob(mob); cleanup(); return; }
@@ -1910,7 +2018,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 if (!mob.isValid() || mob.isDead()) { cleanup(); return; }
                 Mutation base = mobMutations.getOrDefault(mob, Mutation.NONE);
                 tickMutationParticles(mob, base, tick);
-                if (isSnowy(mob)) tickMutationParticles(mob, Mutation.SNOWY, tick);
+                for (Mutation extra : getExtraMutations(mob)) tickMutationParticles(mob, extra, tick);
                 double dx = dest.getX() - lastLoc.getX();
                 double dz = dest.getZ() - lastLoc.getZ();
                 double dist = Math.sqrt(dx * dx + dz * dz);
@@ -2269,8 +2377,52 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         Mutation base = mobMutations.get(entity);
         if (data == null) return 2;
         double mult = (base != null ? base.incomeMultiplier : 1.0);
-        if (entity.getScoreboardTags().contains("MUTATION_SNOWY")) mult *= Mutation.SNOWY.incomeMultiplier;
+        for (Mutation extra : getExtraMutations(entity)) mult *= extra.incomeMultiplier;
         return Math.round(data.incomePerSecond * mult);
+    }
+
+    // ===== API для BrainrotEvents: выдача стакающихся мутаций мобам на конвейере =====
+
+    /** Живые мобы спавнера (конвейер + доставка). */
+    public List<Entity> getSpawnerMobs() {
+        List<Entity> out = new ArrayList<>();
+        for (Entity e : mobDataMap.keySet()) if (e != null && e.isValid() && !e.isDead()) out.add(e);
+        return out;
+    }
+
+    /** Точки конвейеров (спавн/despawn всех валидных спавнеров) — для расчёта области ивентов. */
+    public List<Location> getConveyorPoints() {
+        List<Location> out = new ArrayList<>();
+        for (SpawnerConfig cfg : spawnerConfigs.values()) {
+            if (!cfg.isValid()) continue;
+            out.add(cfg.getSpawnLoc().clone());
+            out.add(cfg.getDespawnLoc().clone());
+        }
+        return out;
+    }
+
+    public boolean hasStackableMutation(Entity mob, String mutationName) {
+        if (mob == null || mutationName == null) return false;
+        return mob.getScoreboardTags().contains("MUTATION_" + mutationName.toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * Навешивает стакающуюся мутацию (SNOWY / ELECTRIC / METEOR) на моба спавнера.
+     * Возвращает false, если моб не наш, мутация неизвестна или уже висит.
+     */
+    public boolean applyStackableMutation(Entity mob, String mutationName) {
+        if (mob == null || !mob.isValid() || mutationName == null) return false;
+        if (!mobDataMap.containsKey(mob)) return false;
+        Mutation target = null;
+        for (Mutation m : STACKABLE_MUTATIONS) {
+            if (m.name().equalsIgnoreCase(mutationName)) { target = m; break; }
+        }
+        if (target == null) return false;
+        if (mob.getScoreboardTags().contains("MUTATION_" + target.name())) return false;
+        mob.addScoreboardTag("MUTATION_" + target.name());
+        mobExtrasCache.put(mob, extrasKey(mob));
+        refreshMobNameTags(mob);
+        return true;
     }
 
     public String getMobName(Entity entity) {
@@ -2321,7 +2473,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         mobToSpawner.clear();
         mobClickCooldown.clear();
         mobMutations.clear();
-        mobSnowyCache.clear();
+        mobExtrasCache.clear();
         legendaryTicksLeft.clear();
         mythicalTicksLeft.clear();
         getLogger().info("§aBrainrotSpawner отключен!");
