@@ -787,6 +787,76 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         if (event.getCause() == LightningStrikeEvent.Cause.WEATHER) event.setCancelled(true);
     }
     // =========================================================
+    // КОМАНДА /brainrotmusic
+    // =========================================================
+    private class MusicCommand implements CommandExecutor, TabCompleter {
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (!sender.hasPermission("brainrotevents.admin")) {
+                sender.sendMessage("§cНет прав.");
+                return true;
+            }
+            if (args.length == 0) {
+                sender.sendMessage("§6/" + label + " on §7— включить музыку всем");
+                sender.sendMessage("§6/" + label + " off §7— выключить музыку всем");
+                sender.sendMessage("§6/" + label + " restart §7— перезапустить трек всем");
+                sender.sendMessage("§6/" + label + " reload §7— перечитать конфиг");
+                sender.sendMessage("§6/" + label + " status §7— текущее состояние");
+                return true;
+            }
+            switch (args[0].toLowerCase(Locale.ROOT)) {
+                case "on" -> {
+                    musicEnabled = true;
+                    getConfig().set("music.enabled", true);
+                    saveConfig();
+                    restartAllLoops();
+                    sender.sendMessage("§aМузыка включена.");
+                }
+                case "off" -> {
+                    musicEnabled = false;
+                    getConfig().set("music.enabled", false);
+                    saveConfig();
+                    stopAllLoops();
+                    for (Player p : Bukkit.getOnlinePlayers()) stopSoundFor(p);
+                    sender.sendMessage("§aМузыка выключена.");
+                }
+                case "restart" -> {
+                    restartAllLoops();
+                    sender.sendMessage("§aТрек перезапущен для всех игроков.");
+                }
+                case "reload" -> {
+                    reloadConfig();
+                    loadMusicConfig();
+                    loadEventsConfig();
+                    regionBounds = null;
+                    restartAllLoops();
+                    startAutoScheduler();
+                    sender.sendMessage("§aКонфиг перечитан. Трек: §f" + soundKey);
+                }
+                case "status" -> {
+                    sender.sendMessage("§eМузыка: " + (musicEnabled ? "§aвкл" : "§cвыкл")
+                            + " §7| трек §f" + soundKey + " §7| длина §f" + trackLengthSeconds + "с"
+                            + " §7| активных циклов §f" + playerLoops.size());
+                    sender.sendMessage("§eИвент: " + (activeEvent == null ? "§7нет" : "§f" + activeEvent.title));
+                }
+                default -> sender.sendMessage("§cНеизвестная подкоманда. Напиши /" + label + " без аргументов.");
+            }
+            return true;
+        }
+
+        @Override
+        public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+            if (args.length != 1) return Collections.emptyList();
+            String p = args[0].toLowerCase(Locale.ROOT);
+            List<String> out = new ArrayList<>();
+            for (String o : List.of("on", "off", "restart", "reload", "status")) {
+                if (o.startsWith(p)) out.add(o);
+            }
+            return out;
+        }
+    }
+
+    // =========================================================
     // КОМАНДА /brainrotevent
     // =========================================================
     private class EventCommand implements CommandExecutor, TabCompleter {
