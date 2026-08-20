@@ -133,6 +133,14 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
 
     private final Map<Entity, Boolean> mobSnowyCache = new HashMap<>();
 
+    // Клиент игнорирует обычные пакеты перемещения для Эндер Дракона (EnderDragon#lerpTo пустой),
+    // поэтому дракон визуально стоит на месте, хотя на сервере он двигается. Обход: невидимый
+    // маркер-армостенд как транспорт, дракон — принудительный пассажир. Пассажира клиент ставит
+    // напрямую от позиции транспорта, так что дракон едет вместе с ним.
+    private final Map<Entity, Entity> dragonCarriers = new HashMap<>();
+    private static final String DRAGON_CARRIER_TAG = "BRAINROT_DRAGON_CARRIER";
+    private static final double DRAGON_CARRIER_Y_OFFSET = 0.0;
+
     private final Map<Entity, Entity> rotWalkerHitboxMap = new HashMap<>();
     private final Map<Entity, BukkitRunnable> rotWalkerAnimTasks = new HashMap<>();
     private static final String ROT_WALKER_ROOT_TAG = "aj.rotwalker.root";
@@ -611,6 +619,28 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             }
         }, 40L);
         logMobChances();
+        Bukkit.getScheduler().runTaskLater(this, this::cleanupOrphanDragonRigs, 60L);
+    }
+
+    // После рестарта задачи движения не восстанавливаются, а мобы persistent — дракон и его
+    // носитель остались бы висеть в мире навсегда. Чистим обоих на старте.
+    private void cleanupOrphanDragonRigs() {
+        int removed = 0;
+        for (SpawnerConfig config : spawnerConfigs.values()) {
+            World world = Bukkit.getWorld(config.getWorldName());
+            if (world == null) continue;
+            for (Entity e : new ArrayList<>(world.getEntities())) {
+                boolean carrier = e.getScoreboardTags().contains(DRAGON_CARRIER_TAG);
+                boolean staleDragon = e.getType() == EntityType.ENDER_DRAGON
+                        && e.getScoreboardTags().contains("MOB_ENDER_DRAGON")
+                        && !isBaseMobEntity(e)
+                        && !mobDataMap.containsKey(e);
+                if (!carrier && !staleDragon) continue;
+                try { e.eject(); } catch (Throwable ignored) {}
+                try { e.remove(); removed++; } catch (Throwable ignored) {}
+            }
+        }
+        if (removed > 0) getLogger().info("[BRAINROT] Убрано зависших сущностей дракона: " + removed);
     }
 
     private MobData selectRandomMob() {
@@ -1254,12 +1284,86 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                     if (scale != null) scale.setBaseValue(0.25);
                 } catch (Throwable ignored) {}
                 mob.addScoreboardTag("NO_DRAGON_AI");
+                createDragonCarrier(mob);
             }
             mob.setTicksLived(1);
             mob.addScoreboardTag("NO_DESPAWN");
             mob.addScoreboardTag("MOB_" + data.name());
             mob.addScoreboardTag("MOB_RARITY_" + data.rarity.name());
         }
+    }
+
+    private Entity createDragonCarrier(Entity dragon) {
+        try {
+            Location loc = dragon.getLocation();
+            ArmorStand carrier = (ArmorStand) dragon.getWorld().spawnEntity(loc, EntityType.ARMOR_STAND);
+            carrier.setVisible(false);
+            carrier.setMarker(true);
+            carrier.setSmall(true);
+            carrier.setBasePlate(false);
+            carrier.setGravity(false);
+            carrier.setInvulnerable(true);
+            carrier.setSilent(true);
+            carrier.setCollidable(false);
+            carrier.setPersistent(true);
+            carrier.setRemoveWhenFarAway(false);
+            carrier.addScoreboardTag(DRAGON_CARRIER_TAG);
+            carrier.addScoreboardTag("NO_DESPAWN");
+            carrier.addPassenger(dragon);
+            dragonCarriers.put(dragon, carrier);
+            return carrier;
+        } catch (Throwable t) {
+            getLogger().warning("[BRAINROT] Не удалось создать носителя для дракона: " + t);
+            return null;
+        }
+    }
+
+    private boolean teleportDragonCarrier(Entity carrier, Location loc) {
+        try {
+            // Bukkit по умолчанию отказывается телепортировать транспорт с пассажирами,
+            // поэтому нужен Paper-флаг RETAIN_PASSENGERS.
+            return carrier.teleport(loc, org.bukkit.event.player.PlayerTeleportEvent.TeleportCause.PLUGIN,
+                    io.papermc.paper.entity.TeleportFlag.EntityState.RETAIN_PASSENGERS);
+        } catch (Throwable t) {
+            try { return carrier.teleport(loc); } catch (Throwable ignored) { return false; }
+        }
+    }
+
+    // Двигает дракона вместе с носителем. Возвращает true, если позиция реально изменилась.
+    private boolean moveDragonRig(Entity dragon, Location target) {
+        if (dragon instanceof EnderDragon d) {
+            try { if (d.getPhase() != EnderDragon.Phase.HOVER) d.setPhase(EnderDragon.Phase.HOVER); } catch (Throwable ignored) {}
+            try { d.setVelocity(new Vector(0, 0, 0)); } catch (Throwable ignored) {}
+        }
+        Entity carrier = dragonCarriers.get(dragon);
+        if (carrier == null || !carrier.isValid() || carrier.isDead()) {
+            dragonCarriers.remove(dragon);
+            carrier = createDragonCarrier(dragon);
+        }
+        if (carrier == null) {
+            try { return dragon.teleport(target); } catch (Throwable t) { return false; }
+        }
+        Location carrierTarget = target.clone().subtract(0, DRAGON_CARRIER_Y_OFFSET, 0);
+        boolean moved = teleportDragonCarrier(carrier, carrierTarget);
+        if (!moved || carrier.getLocation().distanceSquared(carrierTarget) > 0.05) {
+            String dim = carrier.getWorld().getKey().toString();
+            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), String.format(Locale.US,
+                    "execute in %s run minecraft:tp %s %.3f %.3f %.3f %.1f 0",
+                    dim, carrier.getUniqueId(),
+                    carrierTarget.getX(), carrierTarget.getY(), carrierTarget.getZ(), carrierTarget.getYaw()));
+            moved = carrier.getLocation().distanceSquared(carrierTarget) <= 0.05;
+        }
+        if (!carrier.getPassengers().contains(dragon)) {
+            try { carrier.addPassenger(dragon); } catch (Throwable ignored) {}
+        }
+        return moved;
+    }
+
+    private void removeDragonCarrier(Entity dragon) {
+        Entity carrier = dragonCarriers.remove(dragon);
+        if (carrier == null) return;
+        try { carrier.eject(); } catch (Throwable ignored) {}
+        try { if (carrier.isValid()) carrier.remove(); } catch (Throwable ignored) {}
     }
 
     private void startMobMovement(Entity mob, double nameTagHeight, SpawnerConfig config) {
@@ -1338,24 +1442,15 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                         finalMob.teleport(targetLoc);
                     }
                 } else if (mobData == MobData.ENDER_DRAGON) {
-                    if (finalMob instanceof EnderDragon dragon) {
-                        try { if (dragon.getPhase() != EnderDragon.Phase.HOVER) dragon.setPhase(EnderDragon.Phase.HOVER); } catch (Throwable ignored) {}
-                        try { dragon.setVelocity(new Vector(0, 0, 0)); } catch (Throwable ignored) {}
-                    }
-                    boolean moved;
-                    try { moved = finalMob.teleport(targetLoc); } catch (Throwable t) { moved = false; }
-                    if (!moved || finalMob.getLocation().distanceSquared(targetLoc) > 0.05) {
-                        String dim = finalMob.getWorld().getKey().toString();
-                        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), String.format(Locale.US,
-                                "execute in %s run minecraft:tp %s %.3f %.3f %.3f %.1f 0",
-                                dim, finalMob.getUniqueId(),
-                                targetLoc.getX(), targetLoc.getY(), targetLoc.getZ(), targetLoc.getYaw()));
-                    }
+                    boolean moved = moveDragonRig(finalMob, targetLoc);
                     if (tick == 1 || tick == 20 || tick == 60) {
                         Location cur = finalMob.getLocation();
+                        Entity carrier = dragonCarriers.get(finalMob);
                         getLogger().info(String.format(Locale.US,
-                                "[DRAGON] tick=%d moved=%s target=%.2f/%.2f/%.2f actual=%.2f/%.2f/%.2f",
-                                tick, moved, targetLoc.getX(), targetLoc.getY(), targetLoc.getZ(),
+                                "[DRAGON] tick=%d moved=%s carrier=%s riding=%s target=%.2f/%.2f/%.2f actual=%.2f/%.2f/%.2f",
+                                tick, moved, carrier != null && carrier.isValid(),
+                                carrier != null && carrier.getPassengers().contains(finalMob),
+                                targetLoc.getX(), targetLoc.getY(), targetLoc.getZ(),
                                 cur.getX(), cur.getY(), cur.getZ()));
                     }
                 } else {
@@ -1439,6 +1534,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             if (rb != null) try { rb.cancel(); } catch (Exception ignored) {}
             Entity hitbox = spongeHitboxMap.remove(mob);
             if (hitbox != null && hitbox.isValid()) hitbox.remove();
+            removeDragonCarrier(mob);
             removeNameTags(mob);
             mobBuyers.remove(mob);
             deliveryDestinations.remove(mob);
@@ -1854,6 +1950,8 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                     } else {
                         mob.teleport(targetLoc);
                     }
+                } else if (data == MobData.ENDER_DRAGON) {
+                    moveDragonRig(mob, targetLoc);
                 } else {
                     mob.teleport(targetLoc);
                 }
@@ -2197,6 +2295,12 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         spongeHitboxMap.clear();
         for (Entity hitbox : rotWalkerHitboxMap.values()) if (hitbox != null && hitbox.isValid()) hitbox.remove();
         rotWalkerHitboxMap.clear();
+        for (Entity carrier : dragonCarriers.values()) {
+            if (carrier == null) continue;
+            try { carrier.eject(); } catch (Throwable ignored) {}
+            if (carrier.isValid()) try { carrier.remove(); } catch (Throwable ignored) {}
+        }
+        dragonCarriers.clear();
         for (BukkitRunnable task : rotWalkerAnimTasks.values()) if (task != null) try { task.cancel(); } catch (Exception ignored) {}
         rotWalkerAnimTasks.clear();
         for (List<ItemDisplay> wings : luckyBlockWings.values()) for (ItemDisplay wing : wings) if (wing != null && wing.isValid()) wing.remove();
