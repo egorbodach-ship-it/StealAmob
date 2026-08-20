@@ -4464,6 +4464,46 @@ private boolean isBaseMob(Entity entity) {
             }
         }
     }
+    /**
+     * Админ моментально заканчивает таймер лаки-блока: он становится «ГОТОВ К ОТКРЫТИЮ».
+     * Возвращает false, если моба нет или это не лаки-блок.
+     */
+    public boolean adminFinishLuckyBlock(String playerName, int index) {
+        if (mobsConfig == null || savedPlayerMobs == null) return false;
+        List<SavedMobData> mobs = savedPlayerMobs.get(playerName);
+        if (mobs == null || index < 0 || index >= mobs.size()) return false;
+        SavedMobData oldData = mobs.get(index);
+        if (oldData.mobType == null || !oldData.mobType.isLuckyBlock()) return false;
+
+        SavedMobData newData = new SavedMobData(
+            oldData.base, oldData.mobPoint, oldData.collectorPoint, oldData.mobType,
+            0L, true,
+            oldData.mutation, oldData.snowy
+        );
+        mobs.set(index, newData);
+        savedPlayerMobs.put(playerName, mobs);
+        String path = "mobs." + playerName + "." + index;
+        mobsConfig.set(path + ".luckyBlockTimer", 0L);
+        mobsConfig.set(path + ".luckyBlockReady", true);
+        try { saveConfigAsync(mobsConfig, mobsFile); } catch (IOException e) {}
+
+        // Живой лаки-блок в мире: сдвигаем время открытия в прошлое — апдейтер сам перепишет голограмму.
+        for (Map.Entry<Entity, String> entry : entityToPointMap.entrySet()) {
+            if (!entry.getValue().equals(oldData.mobPoint)) continue;
+            Entity mob = entry.getKey();
+            if (mob != null && !mob.isDead()) {
+                luckyBlockOpenTime.put(mob, System.currentTimeMillis() - 1000L);
+                luckyBlockReady.put(mob, true);
+                try {
+                    mob.getWorld().spawnParticle(Particle.HAPPY_VILLAGER, mob.getLocation().add(0, 1, 0), 20, 0.4, 0.4, 0.4, 0.02);
+                    mob.getWorld().playSound(mob.getLocation(), Sound.BLOCK_NOTE_BLOCK_CHIME, 0.8f, 1.6f);
+                } catch (Throwable ignored) {}
+            }
+            break;
+        }
+        getLogger().info("Админ закончил таймер лаки-блока " + oldData.mobPoint + " игрока " + playerName);
+        return true;
+    }
     public boolean adminAddMob(String playerName, String mobTypeStr) {
         String base = null;
         for (Map.Entry<String, String> entry : bases.entrySet()) {

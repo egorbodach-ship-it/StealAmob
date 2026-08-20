@@ -347,6 +347,12 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
             int mobIndex = editingMobIndex.get(admin.getUniqueId());
             
             if (e.getSlot() == 11) { modifyMob(admin, targetName, mobIndex, "DELETE", null); }
+            if (e.getSlot() == 10 && e.getCurrentItem() != null && e.getCurrentItem().getType() == Material.ENDER_EYE) {
+                // Закончить таймер лаки-блока и остаться в редакторе.
+                modifyMob(admin, targetName, mobIndex, "FINISH_LB", null);
+                Bukkit.getScheduler().runTaskLater(this, () -> openMobEditMenu(admin, mobIndex), 15L);
+                return;
+            }
             if (e.getSlot() == 14) { modifyMob(admin, targetName, mobIndex, "TOGGLE_LB", null); }
             // Все мутации — тумблеры: клик по включённой снимает её. После клика остаёмся в редакторе.
             if (e.getSlot() == 13 || (e.getSlot() >= 15 && e.getSlot() <= 21) || e.getSlot() == 23) {
@@ -427,9 +433,14 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
 
         if (type.equals("SPONGE")) {
             boolean isReady = cfg.getBoolean("mobs." + targetName + "." + index + ".luckyBlockReady", false);
+            long lbTimer = cfg.getLong("mobs." + targetName + "." + index + ".luckyBlockTimer", 0L);
             inv.setItem(14, createItem(Material.CLOCK, "§eСостояние Лаки-Блока",
                 "§7Сейчас: " + (isReady ? "§aГОТОВ" : "§cТАЙМЕР"),
                 "§eНажмите, чтобы переключить"
+            ));
+            inv.setItem(10, createItem(Material.ENDER_EYE, "§dЗакончить таймер сейчас",
+                "§7Осталось: " + (isReady ? "§aтаймер уже закончен" : "§f" + formatMs(lbTimer)),
+                "§eКлик — лаки-блок сразу готов к открытию"
             ));
         }
 
@@ -466,6 +477,32 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
     private void modifyMob(Player admin, String targetName, int index, String action, String arg) {
         Plugin bb = Bukkit.getPluginManager().getPlugin("BrainrotBases");
         if (bb == null) { admin.sendMessage("§cBrainrotBases не загружен."); return; }
+
+        if (action.equals("FINISH_LB")) {
+            // Заканчиваем таймер лаки-блока: сначала через API BrainrotBases (живой блок обновится сразу),
+            // если метода нет — правим mobs.yml напрямую.
+            forceSavePlayerMobs(targetName);
+            boolean done = false;
+            try {
+                Method m = bb.getClass().getMethod("adminFinishLuckyBlock", String.class, int.class);
+                done = Boolean.TRUE.equals(m.invoke(bb, targetName, index));
+            } catch (NoSuchMethodException ignored) {
+            } catch (Exception ex) {
+                admin.sendMessage("§cОшибка: " + ex.getMessage());
+                return;
+            }
+            if (!done) {
+                done = setLuckyBlockReadyInFile(targetName, index);
+            }
+            if (done) {
+                admin.sendMessage("§aТаймер Лаки-Блока закончен — он готов к открытию.");
+                Player target = Bukkit.getPlayer(targetName);
+                if (target != null) target.sendMessage("§d⭐ Твой Лаки-Блок готов к открытию!");
+            } else {
+                admin.sendMessage("§cЭто не Лаки-Блок или моб не найден.");
+            }
+            return;
+        }
 
         if (action.equals("TOGGLE_LB")) {
             forceSavePlayerMobs(targetName);
@@ -556,6 +593,30 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
         if (mut == null || mut.isEmpty()) mut = "NONE";
         boolean snowy = cfg.getBoolean(path + ".snowy", false);
         return new String[]{ mut, String.valueOf(snowy) };
+    }
+
+    /**
+     * Фоллбэк, если API BrainrotBases недоступно: ставим лаки-блоку готовность прямо в mobs.yml.
+     * Возвращает false, если моба нет или это не лаки-блок (SPONGE).
+     */
+    private boolean setLuckyBlockReadyInFile(String targetName, int index) {
+        File f = basesFile("mobs.yml");
+        YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
+        String path = "mobs." + targetName + "." + index;
+        if (!cfg.contains(path)) return false;
+        if (!"SPONGE".equals(cfg.getString(path + ".mobType", ""))) return false;
+        cfg.set(path + ".luckyBlockReady", true);
+        cfg.set(path + ".luckyBlockTimer", 0L);
+        try { saveConfigAsync(cfg, f); } catch (IOException e) { return false; }
+        forceReloadFromDisk(targetName);
+        return true;
+    }
+
+    /** мс -> мм:сс для лора кнопки. */
+    private String formatMs(long ms) {
+        if (ms <= 0) return "00:00";
+        long total = ms / 1000L;
+        return String.format("%02d:%02d", total / 60, total % 60);
     }
 
     private String baseOf(String code) {
