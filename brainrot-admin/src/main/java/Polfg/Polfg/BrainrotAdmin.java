@@ -67,6 +67,8 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
     // Временное хранение для редактирования
     private final Map<UUID, String> editingMobTarget = new HashMap<>();
     private final Map<UUID, Integer> editingMobIndex = new HashMap<>();
+    /** Слот в профиле → настоящий индекс моба в mobs.yml (ключи могут идти с пропусками). */
+    private final Map<UUID, Map<Integer, Integer>> mobSlotToIndex = new HashMap<>();
 
     // Список всех мобов
     private static final List<String> ALL_MOBS_SORTED = Arrays.asList(
@@ -193,22 +195,55 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
         ItemStack glass = createItem(Material.BLACK_STAINED_GLASS_PANE, " ");
         for (int k = 27; k < 36; k++) inv.setItem(k, glass);
 
-        loadMobs(inv, target);
+        loadMobs(admin, inv, target);
 
         admin.openInventory(inv);
     }
 
+    /**
+     * Файл из папки данных BrainrotBases. Раньше путь был захардкожен как
+     * "plugins/brainrotBases/..." — на Linux регистр важен, и файл не находился.
+     */
+    private File basesFile(String fileName) {
+        Plugin bb = Bukkit.getPluginManager().getPlugin("BrainrotBases");
+        if (bb != null) {
+            File f = new File(bb.getDataFolder(), fileName);
+            if (f.exists()) return f;
+        }
+        File plugins = getDataFolder().getParentFile();
+        if (plugins != null && plugins.isDirectory()) {
+            File[] dirs = plugins.listFiles();
+            if (dirs != null) {
+                for (File d : dirs) {
+                    if (d.isDirectory() && d.getName().equalsIgnoreCase("BrainrotBases")) {
+                        File f = new File(d, fileName);
+                        if (f.exists()) return f;
+                    }
+                }
+            }
+        }
+        return new File(bb != null ? bb.getDataFolder() : new File("plugins/BrainrotBases"), fileName);
+    }
+
     private void loadMobs(Inventory inv, OfflinePlayer target) {
+        loadMobs(null, inv, target);
+    }
+
+    private void loadMobs(Player admin, Inventory inv, OfflinePlayer target) {
         forceSavePlayerMobs(target.getName()); // Сохраняем текущее состояние перед чтением
 
-        File f = new File("plugins/brainrotBases/mobs.yml");
-        if (!f.exists()) return;
-        YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
-        ConfigurationSection sec = cfg.getConfigurationSection("mobs." + target.getName());
-        
+        File f = basesFile("mobs.yml");
+        Map<Integer, Integer> slotMap = new HashMap<>();
+        if (admin != null) mobSlotToIndex.put(admin.getUniqueId(), slotMap);
         for (int i = 36; i < 54; i++) {
             inv.setItem(i, createItem(Material.LIME_STAINED_GLASS_PANE, "§a[+] Добавить моба"));
         }
+        if (!f.exists()) {
+            getLogger().warning("Brainrot[brainrot-admin]: не найден " + f.getPath() + " — мобы не будут показаны.");
+            return;
+        }
+        YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
+        ConfigurationSection sec = cfg.getConfigurationSection("mobs." + target.getName());
 
         if (sec != null) {
             int slot = 36;
@@ -217,6 +252,9 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
 
             for (String key : keys) {
                 if (slot >= 54) break;
+                int mobIndex;
+                try { mobIndex = Integer.parseInt(key); } catch (NumberFormatException ex) { continue; }
+                slotMap.put(slot, mobIndex);
                 String type = sec.getString(key + ".mobType");
                 String mut = sec.getString(key + ".mutation", "NONE");
                 boolean snow = sec.getBoolean(key + ".snowy", false);
@@ -290,7 +328,9 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
             if (slot >= 36 && slot < 54) {
                 ItemStack it = e.getCurrentItem();
                 if (it != null && it.getType() != Material.LIME_STAINED_GLASS_PANE && it.getType() != Material.AIR) {
-                    int mobIndex = slot - 36;
+                    Map<Integer, Integer> slotMap = mobSlotToIndex.get(admin.getUniqueId());
+                    Integer mapped = slotMap == null ? null : slotMap.get(slot);
+                    int mobIndex = mapped != null ? mapped : (slot - 36);
                     editingMobTarget.put(admin.getUniqueId(), targetName);
                     editingMobIndex.put(admin.getUniqueId(), mobIndex);
                     openMobEditMenu(admin, mobIndex);
@@ -307,16 +347,19 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
             int mobIndex = editingMobIndex.get(admin.getUniqueId());
             
             if (e.getSlot() == 11) { modifyMob(admin, targetName, mobIndex, "DELETE", null); }
-            if (e.getSlot() == 13) { modifyMob(admin, targetName, mobIndex, "CLEAR_MUTATION", null); }
             if (e.getSlot() == 14) { modifyMob(admin, targetName, mobIndex, "TOGGLE_LB", null); }
-            if (e.getSlot() == 15) { modifyMob(admin, targetName, mobIndex, "SET_MUTATION", "GOLD"); }
-            if (e.getSlot() == 16) { modifyMob(admin, targetName, mobIndex, "SET_MUTATION", "DIAMOND"); }
-            if (e.getSlot() == 17) { modifyMob(admin, targetName, mobIndex, "SET_MUTATION", "RAINBOW"); }
-            // Переключатели мутаций возвращают в редактор, чтобы можно было навесить сразу несколько.
-            if (e.getSlot() == 19 || e.getSlot() == 20 || e.getSlot() == 21) {
-                if (e.getSlot() == 19) modifyMob(admin, targetName, mobIndex, "TOGGLE_SNOWY", null);
-                else if (e.getSlot() == 20) modifyMob(admin, targetName, mobIndex, "TOGGLE_EXTRA", "ELECTRIC");
-                else modifyMob(admin, targetName, mobIndex, "TOGGLE_EXTRA", "METEOR");
+            // Все мутации — тумблеры: клик по включённой снимает её. После клика остаёмся в редакторе.
+            if (e.getSlot() == 13 || (e.getSlot() >= 15 && e.getSlot() <= 21)) {
+                switch (e.getSlot()) {
+                    case 13 -> modifyMob(admin, targetName, mobIndex, "CLEAR_MUTATION", null);
+                    case 15 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_BASE", "GOLD");
+                    case 16 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_BASE", "DIAMOND");
+                    case 17 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_BASE", "RAINBOW");
+                    case 19 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_SNOWY", null);
+                    case 20 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_EXTRA", "ELECTRIC");
+                    case 21 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_EXTRA", "METEOR");
+                    default -> { }
+                }
                 Bukkit.getScheduler().runTaskLater(this, () -> openMobEditMenu(admin, mobIndex), 15L);
                 return;
             }
@@ -344,7 +387,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
 
     private void openMobEditMenu(Player admin, int index) {
         String targetName = editingMobTarget.get(admin.getUniqueId());
-        File f = new File("plugins/brainrotBases/mobs.yml");
+        File f = basesFile("mobs.yml");
         YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
         String type = cfg.getString("mobs." + targetName + "." + index + ".mobType", "CHICKEN");
         
@@ -353,20 +396,30 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
         if (curMut == null || curMut.isEmpty()) curMut = "NONE";
         boolean curSnowy = cfg.getBoolean("mobs." + targetName + "." + index + ".snowy", false);
         List<String> curExtras = extrasOf(curMut);
+        String curBase = baseOf(curMut);
         inv.setItem(11, createItem(Material.REDSTONE_BLOCK, "§cУдалить моба"));
-        inv.setItem(13, createItem(Material.MILK_BUCKET, "§fСнять мутации"));
-        inv.setItem(15, createItem(Material.GOLD_INGOT, "§6Сделать Золотым"));
-        inv.setItem(16, createItem(Material.DIAMOND, "§bСделать Алмазным"));
-        inv.setItem(17, createItem(Material.NETHER_STAR, "§dСделать Радужным"));
+        inv.setItem(13, createItem(Material.MILK_BUCKET, "§fСнять все мутации",
+                "§7Сейчас: " + (curBase.equals("NONE") && curExtras.isEmpty() && !curSnowy
+                        ? "§7мутаций нет"
+                        : "§d" + (curBase.equals("NONE") ? "" : curBase + " ") + String.join(" ", curExtras) + (curSnowy ? " SNOWY" : ""))));
+        inv.setItem(15, createItem(Material.GOLD_INGOT, "§6Золотой §7(×1.25)",
+                "§7Сейчас: " + (curBase.equals("GOLD") ? "§aвключён" : "§cвыключен"),
+                "§eКлик — вкл/выкл §7(базовая мутация одна)"));
+        inv.setItem(16, createItem(Material.DIAMOND, "§bАлмазный §7(×1.5)",
+                "§7Сейчас: " + (curBase.equals("DIAMOND") ? "§aвключён" : "§cвыключен"),
+                "§eКлик — вкл/выкл §7(базовая мутация одна)"));
+        inv.setItem(17, createItem(Material.NETHER_STAR, "§dРадужный §7(×10)",
+                "§7Сейчас: " + (curBase.equals("RAINBOW") ? "§aвключён" : "§cвыключен"),
+                "§eКлик — вкл/выкл §7(базовая мутация одна)"));
         inv.setItem(19, createItem(Material.POWDER_SNOW_BUCKET, "§bСнежный §7(×5)",
                 "§7Сейчас: " + (curSnowy ? "§aвключён" : "§cвыключен"),
-                "§eНажмите, чтобы переключить"));
+                "§eКлик — вкл/выкл"));
         inv.setItem(20, createItem(Material.LIGHTNING_ROD, "§eЭлектрический §7(×3)",
                 "§7Сейчас: " + (curExtras.contains("ELECTRIC") ? "§aвключён" : "§cвыключен"),
-                "§eНажмите, чтобы переключить"));
+                "§eКлик — вкл/выкл"));
         inv.setItem(21, createItem(Material.FIRE_CHARGE, "§cМетеоритный §7(×4)",
                 "§7Сейчас: " + (curExtras.contains("METEOR") ? "§aвключён" : "§cвыключен"),
-                "§eНажмите, чтобы переключить"));
+                "§eКлик — вкл/выкл"));
         
         if (type.equals("SPONGE")) {
             boolean isReady = cfg.getBoolean("mobs." + targetName + "." + index + ".luckyBlockReady", false);
@@ -408,11 +461,11 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
 
     private void modifyMob(Player admin, String targetName, int index, String action, String arg) {
         Plugin bb = Bukkit.getPluginManager().getPlugin("BrainrotBases");
-        if (bb == null) return;
+        if (bb == null) { admin.sendMessage("§cBrainrotBases не загружен."); return; }
 
         if (action.equals("TOGGLE_LB")) {
             forceSavePlayerMobs(targetName);
-            File f = new File("plugins/brainrotBases/mobs.yml");
+            File f = basesFile("mobs.yml");
             YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
             String path = "mobs." + targetName + "." + index;
             if (cfg.contains(path)) {
@@ -451,6 +504,14 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
                 m.invoke(bb, targetName, index, code, Boolean.parseBoolean(cur[1]));
                 admin.sendMessage("§aМутация " + arg + " установлена.");
             }
+            else if (action.equals("TOGGLE_BASE")) {
+                // Базовая мутация одна: клик по включённой снимает её, по другой — заменяет.
+                String[] cur = readMobMutation(targetName, index);
+                String base = baseOf(cur[0]).equals(arg) ? "NONE" : arg;
+                Method m = bb.getClass().getMethod("adminSetMutation", String.class, int.class, String.class, boolean.class);
+                m.invoke(bb, targetName, index, buildMutationCode(base, extrasOf(cur[0])), Boolean.parseBoolean(cur[1]));
+                admin.sendMessage("§aМутация " + arg + (base.equals("NONE") ? " §cснята." : " §aдобавлена."));
+            }
             else if (action.equals("TOGGLE_EXTRA")) {
                 String[] cur = readMobMutation(targetName, index);
                 String base = baseOf(cur[0]);
@@ -484,7 +545,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
     /** Возвращает [строка мутаций, snowy] текущего моба из mobs.yml. */
     private String[] readMobMutation(String targetName, int index) {
         forceSavePlayerMobs(targetName);
-        File f = new File("plugins/brainrotBases/mobs.yml");
+        File f = basesFile("mobs.yml");
         YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
         String path = "mobs." + targetName + "." + index;
         String mut = cfg.getString(path + ".mutation", "NONE");
@@ -517,21 +578,25 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
 
     private void addMob(Player admin, String targetName, String type) {
         Plugin bb = Bukkit.getPluginManager().getPlugin("BrainrotBases");
-        if (bb == null) return;
+        if (bb == null) { admin.sendMessage("§cBrainrotBases не загружен."); return; }
 
         try {
             Method m = bb.getClass().getMethod("adminAddMob", String.class, String.class);
             boolean success = (boolean) m.invoke(bb, targetName, type);
-            
+
             if (success) {
                 admin.sendMessage("§aМоб " + type + " успешно добавлен!");
                 Player target = Bukkit.getPlayer(targetName);
                 if (target != null) target.sendMessage("§aАдминистратор выдал вам моба: " + type);
             } else {
-                admin.sendMessage("§cНе удалось добавить моба (нет базы или мест).");
+                String base = getPlayerBaseFromAPI(targetName);
+                if (base == null) base = getBaseFromConfig(targetName);
+                if (base == null) admin.sendMessage("§cУ игрока " + targetName + " нет занятой базы — моба некуда ставить.");
+                else admin.sendMessage("§cНе удалось добавить моба: на базе " + base + " нет свободных точек, либо тип " + type + " неизвестен BrainrotBases.");
             }
         } catch (Exception e) {
             admin.sendMessage("§cОшибка API: " + e.getMessage());
+            org.bukkit.Bukkit.getLogger().warning("Brainrot[brainrot-admin] addMob: " + e);
         }
     }
 
@@ -636,7 +701,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
     }
 
     private String getBaseFromConfig(String playerName) {
-        File f = new File("plugins/brainrotBases/config.yml");
+        File f = basesFile("config.yml");
         if (!f.exists()) return null;
         YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
         ConfigurationSection bases = cfg.getConfigurationSection("bases");
@@ -680,7 +745,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
     }
 
     private int getRebirths(OfflinePlayer p) {
-        File f = new File("plugins/brainrotBases/rebirths.yml");
+        File f = basesFile("rebirths.yml");
         if (!f.exists()) return 0;
         YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
         String uuid = p.getUniqueId().toString();

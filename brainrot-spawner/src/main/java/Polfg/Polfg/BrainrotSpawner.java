@@ -143,6 +143,8 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private static final double DRAGON_CARRIER_Y_OFFSET = 0.0;
     // Разворот модели дракона относительно направления конвейера (config: dragon.yaw-offset).
     private float dragonYawOffset = -90.0f;
+    // Инверсия знака yaw (config: dragon.yaw-invert). Нужна, потому что клиент рисует дракона зеркально.
+    private boolean dragonYawInvert = false;
 
     private final Map<Entity, Entity> rotWalkerHitboxMap = new HashMap<>();
     private final Map<Entity, BukkitRunnable> rotWalkerAnimTasks = new HashMap<>();
@@ -944,7 +946,12 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             cfg.set("dragon.yaw-offset", -90);
             saveConfig();
         }
+        if (!cfg.contains("dragon.yaw-invert")) {
+            cfg.set("dragon.yaw-invert", false);
+            saveConfig();
+        }
         dragonYawOffset = (float) cfg.getDouble("dragon.yaw-offset", -90);
+        dragonYawInvert = cfg.getBoolean("dragon.yaw-invert", false);
         if (cfg.contains("spawners")) {
             for (String id : cfg.getConfigurationSection("spawners").getKeys(false)) {
                 String path = "spawners." + id + ".";
@@ -1121,7 +1128,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             if (selectedMob == MobData.ENDER_DRAGON) {
                 // Ставим разворот в тот же тик, что и спавн: клиент получит его сразу
                 // в пакете добавления сущности, дальше он поддерживается в moveDragonRig.
-                applyDragonYaw(mob, getYawFromDirection(config.getDirection()) + dragonYawOffset);
+                applyDragonYaw(mob, getYawFromDirection(config.getDirection()));
             }
             double nameTagHeight = selectedMob.getEntityHeight() + 0.3;
             mobHoloHeights.put(mob, nameTagHeight);
@@ -1428,7 +1435,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         if (!carrier.getPassengers().contains(dragon)) {
             try { carrier.addPassenger(dragon); } catch (Throwable ignored) {}
         }
-        applyDragonYaw(dragon, target.getYaw() + dragonYawOffset);
+        applyDragonYaw(dragon, target.getYaw());
         return moved;
     }
 
@@ -1440,14 +1447,64 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
      * цель: ставим targetLocation фазы HOVER в точку в 20 блоках по нужному азимуту, и дракон
      * доворачивается туда сам. Улететь он не может: позицию каждый тик задаёт носитель.
      */
-    private void applyDragonYaw(Entity dragon, float yaw) {
-        final float norm = Location.normalizeYaw(yaw);
+    private void applyDragonYaw(Entity dragon, float travelYaw) {
+        final float norm = dragonRenderYaw(travelYaw);
         steerDragonHover(dragon, norm);
-        // Подстраховка, если ИИ по какой-то причине yaw не трогает.
+        forceDragonYawNms(dragon, norm);
+        // Подстраховка через Bukkit API, если NMS-поля не нашлись.
         try {
             Method m = dragon.getClass().getMethod("setRotation", float.class, float.class);
             m.invoke(dragon, norm, 0f);
         } catch (Throwable ignored) {}
+    }
+
+    /**
+     * Итоговый yaw для дракона. Клиент рисует дракона зеркально относительно обычных мобов
+     * (та же причина, по которой ломаются дракон-дисгайзы), поэтому знак поворота можно
+     * инвертировать флагом dragon.yaw-invert — одним смещением зеркало не исправить.
+     */
+    private float dragonRenderYaw(float travelYaw) {
+        float y = dragonYawInvert ? -travelYaw : travelYaw;
+        return Location.normalizeYaw(y + dragonYawOffset);
+    }
+
+    /** Пишем yaw/yBodyRot/yHeadRot прямо в NMS-сущность: Bukkit setRotation трогает только yRot. */
+    private void forceDragonYawNms(Entity dragon, float yaw) {
+        try {
+            Object handle = dragon.getClass().getMethod("getHandle").invoke(dragon);
+            invokeFloatSetter(handle, yaw, "setYRot", "setYHeadRot", "setYBodyRot");
+            setFloatFieldIfExists(handle, yaw, "yRotO", "yBodyRot", "yBodyRotO", "yHeadRot", "yHeadRotO");
+        } catch (Throwable t) {
+            warnDragonSteer("NMS yaw: " + t);
+        }
+    }
+
+    private void invokeFloatSetter(Object handle, float value, String... names) {
+        for (String name : names) {
+            try {
+                Method m = handle.getClass().getMethod(name, float.class);
+                m.setAccessible(true);
+                m.invoke(handle, value);
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    private void setFloatFieldIfExists(Object handle, float value, String... names) {
+        for (String name : names) {
+            Class<?> c = handle.getClass();
+            while (c != null) {
+                try {
+                    java.lang.reflect.Field f = c.getDeclaredField(name);
+                    f.setAccessible(true);
+                    f.setFloat(handle, value);
+                    break;
+                } catch (NoSuchFieldException e) {
+                    c = c.getSuperclass();
+                } catch (Throwable t) {
+                    break;
+                }
+            }
+        }
     }
 
     // Цель полёта текущей фазы -> поле Vec3 внутри фазы (Paper 1.20.5+ работает на Mojang-маппингах).
@@ -1477,8 +1534,10 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     }
 
     private boolean dragonSteerWarned = false;
+    private String lastDragonSteerError = null;
 
     private void warnDragonSteer(String reason) {
+        lastDragonSteerError = reason;
         if (dragonSteerWarned) return;
         dragonSteerWarned = true;
         getLogger().warning("[BRAINROT] Не удалось задать дракону цель полёта (" + reason
@@ -2238,6 +2297,39 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 s.sendMessage("§6/brainrotspawn chances");
                 s.sendMessage("§6/brainrotspawn dragonyaw <градусы> §7— разворот дракона (сейчас "
                         + (int) dragonYawOffset + "°)");
+                s.sendMessage("§6/brainrotspawn dragoninvert §7— зеркальный поворот (сейчас "
+                        + (dragonYawInvert ? "вкл" : "выкл") + ")");
+                s.sendMessage("§6/brainrotspawn dragondebug §7— что сейчас с драконами");
+                return true;
+            }
+            if (a[0].equalsIgnoreCase("dragoninvert")) {
+                dragonYawInvert = !dragonYawInvert;
+                getConfig().set("dragon.yaw-invert", dragonYawInvert);
+                saveConfig();
+                s.sendMessage("§aЗеркальный поворот дракона: §f" + (dragonYawInvert ? "включён" : "выключен")
+                        + " §7(применится в течение тика)");
+                return true;
+            }
+            if (a[0].equalsIgnoreCase("dragondebug")) {
+                s.sendMessage("§6[Дракон] §7offset=§f" + (int) dragonYawOffset
+                        + " §7invert=§f" + dragonYawInvert
+                        + " §7ошибка рулёжки=§f" + (lastDragonSteerError == null ? "нет" : lastDragonSteerError));
+                int found = 0;
+                for (Map.Entry<Entity, MobData> entry : new HashMap<>(mobDataMap).entrySet()) {
+                    Entity mob = entry.getKey();
+                    if (entry.getValue() != MobData.ENDER_DRAGON || mob == null || !mob.isValid()) continue;
+                    found++;
+                    String phase = "?";
+                    if (mob instanceof EnderDragon d) {
+                        try { phase = String.valueOf(d.getPhase()); } catch (Throwable ignored) {}
+                    }
+                    Entity carrier = dragonCarriers.get(mob);
+                    s.sendMessage("§7#" + found + " yaw=§f" + String.format(Locale.US, "%.1f", mob.getLocation().getYaw())
+                            + " §7фаза=§f" + phase
+                            + " §7носитель=§f" + (carrier != null && carrier.isValid() ? "есть" : "нет")
+                            + " §7ИИ=§f" + (mob instanceof LivingEntity le && le.hasAI()));
+                }
+                if (found == 0) s.sendMessage("§7Живых драконов спавнера нет.");
                 return true;
             }
             if (a[0].equalsIgnoreCase("dragonyaw")) {
