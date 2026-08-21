@@ -10,5 +10,14 @@
     </parent>
     <artifactId>brainrot-events</artifactId>
     <packaging>jar</packaging>
-    <!-- Музыкальный модуль: внешние зависимости (WorldEdit/FAWE) больше не нужны. -->
+    <dependencies>
+        <!-- Ивент «3 Тропы» вставляет схемы 3road/roadorig, поэтому WorldEdit снова нужен.
+             scope provided: на сервере уже стоит WorldEdit/FAWE, в jar его не пакуем. -->
+        <dependency>
+            <groupId>com.sk89q.worldedit</groupId>
+            <artifactId>worldedit-bukkit</artifactId>
+            <version>${worldedit.version}</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
 </project>

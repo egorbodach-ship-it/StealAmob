@@ -3,14 +3,14 @@ version: '${project.version}'
 main: Polfg.Polfg.BrainrotEvents
 api-version: '1.20'
 author: Polfg
-softdepend: [BrainrotSpawner, WorldGuard]
+softdepend: [BrainrotSpawner, WorldGuard, WorldEdit, FastAsyncWorldEdit]
 commands:
   brainrotmusic:
     description: Manage Brainrot background music
     usage: /brainrotmusic <on|off|restart|reload|status>
   brainrotevent:
     description: Manage Brainrot world events
-    usage: /brainrotevent <start <badweather|meteor|creeper> [sec] | stop [event] | status | reload>
+    usage: /brainrotevent <start <badweather|meteor|creeper|3road> [sec] | stop [event] | status | reload>
     aliases: [brevent, brainrotevents]
 permissions:
   brainrotevents.admin:

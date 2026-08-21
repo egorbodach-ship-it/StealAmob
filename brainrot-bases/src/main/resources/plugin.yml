@@ -25,4 +25,5 @@ commands:
   mobdebug:
     description: Debug mob data
   savemobs:
-    description: Force-save mob data
+    description: Force-save mob data, manage mobs.yml backups
+    usage: /savemobs [backup|backups|list <player> [file]|restore <player> [file]]

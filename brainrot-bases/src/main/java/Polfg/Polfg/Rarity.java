@@ -5,7 +5,8 @@ enum Rarity {
     RARE("§9Редкий"),
     EPIC("§5Эпический"),
     LEGENDARY("§6§lЛегендарный"),
-    MYTHICAL("§d§l✦ Мифический ✦");
+    MYTHICAL("§d§l✦ Мифический ✦"),
+    BRAINROT_GOD("§b§l✧ Божественный ✧");
     final String displayName;
     Rarity(String displayName) {
         this.displayName = displayName;

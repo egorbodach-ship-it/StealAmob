@@ -67,7 +67,12 @@ public enum MobType {
     ZOGLIN("Зоглин", EntityType.ZOGLIN, 11000.0, Material.ZOGLIN_SPAWN_EGG, 3000000, true, Rarity.MYTHICAL),
     AXOLOTL("Аксолотль", EntityType.AXOLOTL, 12000.0, Material.AXOLOTL_SPAWN_EGG, 3500000, true, Rarity.MYTHICAL),
     WARDEN("Варден", EntityType.WARDEN, 15000.0, Material.SCULK_SHRIEKER, 5000000, true, Rarity.MYTHICAL),
-    ROT_WALKER("Гнилоход", EntityType.ITEM_DISPLAY, 50000.0, Material.SLIME_BALL, 9999999, true, Rarity.MYTHICAL);
+    ROT_WALKER("Гнилоход", EntityType.ITEM_DISPLAY, 50000.0, Material.SLIME_BALL, 9999999, true, Rarity.MYTHICAL),
+    // Божественный. Стоит последним намеренно: fromEntity в конце перебирает
+    // MobType по типу сущности, и обычный HUSK объявлен выше — значит ванильный
+    // хаск по-прежнему опознаётся как HUSK, а Самоварус ловится раньше по тегу
+    // MOB_SAMOVARUS. Доход и цена совпадают со спавнером: 120к/сек, 40кк.
+    SAMOVARUS("Самоварус Максимус", EntityType.HUSK, 120000.0, Material.CAULDRON, 40000000, true, Rarity.BRAINROT_GOD);
     public final String name;
     public final EntityType type;
     public double baseIncome;
@@ -94,7 +99,15 @@ public enum MobType {
         return rarity == Rarity.LEGENDARY;
     }
     public boolean isMythical() {
-        return rarity == Rarity.MYTHICAL;
+        // Божественный тир сознательно попадает и сюда: isMythical() по всему
+        // плагину читается как «высший тир» и управляет частицами, тегами и
+        // подсветкой в тридцати с лишним местах. Отдельный флаг заставил бы
+        // править их все, а Самоварус без них выглядел бы как обычный моб.
+        // На деньги это не влияет: доход берётся из baseIncome.
+        return rarity == Rarity.MYTHICAL || rarity == Rarity.BRAINROT_GOD;
+    }
+    public boolean isGod() {
+        return rarity == Rarity.BRAINROT_GOD;
     }
     public boolean isLuckyBlock() {
         return this == SPONGE;

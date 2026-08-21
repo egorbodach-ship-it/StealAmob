@@ -247,6 +247,17 @@ public class BrainrotBases extends JavaPlugin implements Listener {
     private final Object moneyLock = new Object();
     private final Set<String> playersWithInitialBalance = ConcurrentHashMap.newKeySet();
     private final Map<String, List<SavedMobData>> savedPlayerMobs = new ConcurrentHashMap<>();
+    // Игроки, которым прямо сейчас восстанавливают мобов на базе.
+    // Пока имя лежит здесь, savePlayerMobsInstantly не имеет права перезаписывать
+    // сохранение: мобов в мире ещё нет или не всех (applyStage вставляет схематику
+    // асинхронно, лаки-блок спавнится анимацией), а сохранение собирается «по
+    // живым сущностям» — оно бы записало пустоту вместо всего списка.
+    private final Set<String> restoringMobs = ConcurrentHashMap.newKeySet();
+    // Когда игрок зашёл на сервер. Нужно только для защиты сохранения:
+    // сразу после входа «живых мобов ноль» — нормальное состояние, а не повод
+    // стирать сохранение.
+    private final Map<String, Long> joinTimeMs = new ConcurrentHashMap<>();
+    private static final long SAVE_WIPE_GRACE_MS = 15000L;
     private final Map<Entity, Long> mobSpawnTime = new ConcurrentHashMap<>();
     private static final long MOB_MIN_LIFETIME = 30000L;
     private final Random random = new Random();
@@ -298,6 +309,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             }
         }
         mobsConfig = YamlConfiguration.loadConfiguration(mobsFile);
+        backupMobsFile();
         hologramManager = FancyHologramsPlugin.get().getHologramManager();
         ensureWorldsLoaded();
         registerRebirthCommand();
@@ -2292,7 +2304,6 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         }
         player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1f, 1.5f);
         player.getWorld().spawnParticle(Particle.HAPPY_VILLAGER, player.getLocation().add(0, 1, 0), 20, 0.5, 0.5, 0.5, 0.1);
-        savePlayerMobsToFile(playerName);
         savePlayerMobsInstantly(player.getName());
     }
     private void sendCooldownMessage(Player player, String message, Map<Player, Long> cooldownMap) {
@@ -3654,7 +3665,30 @@ private boolean isBaseMob(Entity entity) {
             }
         }
     }
+    /**
+     * Восстановление мобов на базе. Обёртка нужна из-за того, что само
+     * восстановление растянуто по времени (схематика второго этажа вставляется
+     * асинхронно, лаки-блок появляется анимацией, мутации накладываются через
+     * 10 тиков). Пока идёт восстановление, savePlayerMobsInstantly обязано
+     * молчать: он собирает список «по живым сущностям», а их в этот момент нет
+     * или не все — и записал бы пустоту вместо всего сохранения.
+     */
     private void restorePlayerMobs(String playerName) {
+        if (playerName == null) return;
+        restoringMobs.add(playerName);
+        try {
+            restorePlayerMobsInternal(playerName);
+        } finally {
+            // Через 3 секунды все спавны и анимации точно закончены.
+            // Точки, где анимация ещё идёт, дополнительно прикрыты animatingPoints.
+            if (isEnabled()) {
+                Bukkit.getScheduler().runTaskLater(this, () -> restoringMobs.remove(playerName), 60L);
+            } else {
+                restoringMobs.remove(playerName);
+            }
+        }
+    }
+    private void restorePlayerMobsInternal(String playerName) {
         List<SavedMobData> savedMobs = savedPlayerMobs.get(playerName);
         if (savedMobs == null || savedMobs.isEmpty()) {
             getLogger().info("Нет сохраненных мобов для " + playerName);
@@ -3985,20 +4019,31 @@ private boolean isBaseMob(Entity entity) {
         debugLog("[LB CLEANUP] ============================");
     }
     private void moveSavedMobsToNewBase(String playerName, String newBase) {
-        List<SavedMobData> savedMobs = savedPlayerMobs.remove(playerName);
-        if (savedMobs == null || savedMobs.isEmpty()) {
+        // Раньше первой же строкой стояло savedPlayerMobs.remove(playerName) —
+        // список выдёргивался из памяти ДО всех проверок, и любой ранний return
+        // (нет точек у базы, база без коллекторов) уносил мобов навсегда.
+        // Теперь читаем копию, а память меняем только когда новый список готов.
+        List<SavedMobData> saved = savedPlayerMobs.get(playerName);
+        if (saved == null || saved.isEmpty()) {
             getLogger().info("Нет сохраненных мобов для перемещения игрока " + playerName);
             return;
         }
+        List<SavedMobData> savedMobs = new ArrayList<>(saved);
         debugLog("Перемещение " + savedMobs.size() + " мобов игрока " + playerName + " на базу " + newBase);
-        cleanupOldCollectorHologramsForPlayer(playerName);
-        List<SavedMobData> updatedMobs = new ArrayList<>();
         List<String> newMobPoints = baseMobSpawnPoints.get(newBase);
         List<String> newCollectorPoints = baseCollectorPoints.get(newBase);
-        if (newMobPoints == null || newCollectorPoints == null) {
-            getLogger().warning("Новая база " + newBase + " не имеет точек спавна или коллекторов");
+        if (newMobPoints == null || newMobPoints.isEmpty() || newCollectorPoints == null) {
+            // Ничего не трогаем: мобы остаются в памяти и в mobs.yml,
+            // игрок получит их на следующем заходе или после правки конфига базы.
+            getLogger().warning("Новая база " + newBase + " не имеет точек спавна или коллекторов — "
+                    + savedMobs.size() + " мобов игрока " + playerName + " оставлены в сохранении без изменений");
             return;
         }
+        // Пока раскладываем и восстанавливаем — запрещаем сохранению перезаписывать
+        // данные: живых мобов на базе ещё нет, и «сохранение по живым» записало бы пустоту.
+        restoringMobs.add(playerName);
+        cleanupOldCollectorHologramsForPlayer(playerName);
+        List<SavedMobData> updatedMobs = new ArrayList<>();
         java.util.Set<String> usedMobPoints = new java.util.HashSet<>();
         java.util.Set<String> usedCollectorPoints = new java.util.HashSet<>();
         java.util.List<SavedMobData> toRemap = new ArrayList<>();
@@ -4031,13 +4076,20 @@ private boolean isBaseMob(Entity entity) {
                 toRemap.add(savedMob);
             }
         }
+        int parked = 0;
         for (SavedMobData savedMob : toRemap) {
             String mobPoint = null;
             for (String cand : newMobPoints) {
                 if (!usedMobPoints.contains(cand)) { mobPoint = cand; break; }
             }
             if (mobPoint == null) {
-                getLogger().warning("[Stage2] no free mob point on base " + newBase + ", mob skipped");
+                // Свободных точек на новой базе не осталось (обычно так бывает,
+                // когда мобы жили на втором этаже, а этаж ещё не открыт).
+                // Раньше здесь стоял continue — моб просто исчезал. Теперь он
+                // остаётся в сохранении на своей старой точке и вернётся, как
+                // только точка появится: этаж откроется или освободится слот.
+                updatedMobs.add(savedMob);
+                parked++;
                 continue;
             }
             usedMobPoints.add(mobPoint);
@@ -4055,10 +4107,20 @@ private boolean isBaseMob(Entity entity) {
                 savedMob.snowy
             ));
         }
+        if (parked > 0) {
+            getLogger().warning("На базе " + newBase + " не хватило точек для " + parked
+                    + " мобов игрока " + playerName + " — они сохранены и ждут свободной точки");
+        }
         savedPlayerMobs.put(playerName, updatedMobs);
+        // Новую раскладку сразу на диск: раньше она жила только в памяти,
+        // и падение сервера до следующего сохранения возвращало старые точки.
+        writeSavedMobsSection(playerName, updatedMobs);
         Bukkit.getScheduler().runTaskLater(this, () -> {
             restorePlayerMobs(playerName);
         }, 10L);
+        // Страховка: если restorePlayerMobs почему-то не снимет флаг, снимем сами,
+        // иначе игрок навсегда останется без сохранений.
+        Bukkit.getScheduler().runTaskLater(this, () -> restoringMobs.remove(playerName), 200L);
         getLogger().info("Мобы игрока " + playerName + " успешно перемещены на базу " + newBase);
     }
     private void cleanupOldCollectorHologramsForPlayer(String playerName) {
@@ -4082,84 +4144,16 @@ private boolean isBaseMob(Entity entity) {
             }
         }
     }
+    /**
+     * Было отдельной копией сохранения — и копией с ошибками: моб писался
+     * четырёхаргументным конструктором SavedMobData, то есть мутация, снежность
+     * и таймер лаки-блока терялись; секция mobs.&lt;игрок&gt; обнулялась в самом
+     * начале, так что любой ранний return оставлял в памяти конфига пустоту,
+     * которую потом на диск уносило чужое сохранение.
+     * Теперь это просто синоним основного пути.
+     */
     private void savePlayerMobsToFile(String playerName) {
-        if (mobsConfig == null) {
-            getLogger().warning("Файл mobs.yml не загружен!");
-            return;
-        }
-        mobsConfig.set("mobs." + playerName, null);
-        String playerBase = null;
-        for (Map.Entry<String, String> entry : bases.entrySet()) {
-            if (entry.getValue().equals(playerName)) {
-                playerBase = entry.getKey();
-                break;
-            }
-        }
-        if (playerBase == null) {
-            getLogger().warning("У игрока " + playerName + " нет базы для сохранения мобов.");
-            savedPlayerMobs.remove(playerName);
-            return;
-        }
-        List<String> basePoints = baseMobSpawnPoints.get(playerBase);
-        if (basePoints == null || basePoints.isEmpty()) {
-            getLogger().warning("На базе " + playerBase + " нет точек мобов!");
-            return;
-        }
-        getLogger().info("=== Сохранение мобов для " + playerName + " (база " + playerBase + ") ===");
-        List<SavedMobData> currentMobs = new ArrayList<>();
-        for (Map.Entry<Entity, String> entry : new HashMap<>(entityToPointMap).entrySet()) {
-            Entity mob = entry.getKey();
-            String mobPoint = entry.getValue();
-            if (mob == null || !mob.isValid() || mob.isDead()) {
-                continue;
-            }
-            if (!basePoints.contains(mobPoint)) {
-                continue;
-            }
-            MobType type = MobType.fromEntity(mob);
-            if (type == null) {
-                getLogger().warning("Не удалось определить тип моба на точке " + mobPoint);
-                continue;
-            }
-            String collectorId = entityToCollectorMap.get(mobPoint);
-            String collectorPoint = null;
-            if (collectorId != null) {
-                String[] parts = collectorId.split("_", 2);
-                if (parts.length == 2 && parts[0].equals(playerBase)) {
-                    collectorPoint = parts[1];
-                }
-            }
-            SavedMobData savedData = new SavedMobData(playerBase, mobPoint, collectorPoint, type);
-            currentMobs.add(savedData);
-            getLogger().info("  ✓ Сохранен: " + type.name + " | Точка: " + mobPoint + " | Коллектор: " + collectorPoint);
-        }
-        if (!currentMobs.isEmpty()) {
-            for (int i = 0; i < currentMobs.size(); i++) {
-                SavedMobData data = currentMobs.get(i);
-                String path = "mobs." + playerName + "." + i;
-                mobsConfig.set(path + ".base", data.base);
-                mobsConfig.set(path + ".mobPoint", data.mobPoint);
-                mobsConfig.set(path + ".mobType", data.mobType.name());
-                mobsConfig.set(path + ".collectorPoint", data.collectorPoint);
-                mobsConfig.set(path + ".mutation", data.mutation);
-                mobsConfig.set(path + ".snowy", data.snowy);
-            }
-            savedPlayerMobs.put(playerName, currentMobs);
-            try {
-                saveConfigAsync(mobsConfig, mobsFile);
-                debugLog("=== Сохранено " + currentMobs.size() + " мобов для " + playerName + " ===");
-            } catch (IOException e) {
-                getLogger().severe("Ошибка сохранения mobs.yml: " + e.getMessage());
-            }
-        } else {
-            getLogger().info("У игрока " + playerName + " нет мобов для сохранения.");
-            savedPlayerMobs.remove(playerName);
-            try {
-                saveConfigAsync(mobsConfig, mobsFile);
-            } catch (IOException e) {
-                getLogger().severe("Ошибка сохранения mobs.yml: " + e.getMessage());
-            }
-        }
+        savePlayerMobsInstantly(playerName);
     }
     private void loadMobsFromConfig() {
         if (mobsConfig == null) {
@@ -4403,22 +4397,7 @@ private boolean isBaseMob(Entity entity) {
         }
         mobs.remove(index);
         savedPlayerMobs.put(playerName, mobs);
-        mobsConfig.set("mobs." + playerName, null);
-        for (int i = 0; i < mobs.size(); i++) {
-            SavedMobData m = mobs.get(i);
-            String path = "mobs." + playerName + "." + i;
-            mobsConfig.set(path + ".base", m.base);
-            mobsConfig.set(path + ".mobPoint", m.mobPoint);
-            mobsConfig.set(path + ".mobType", m.mobType.name());
-            mobsConfig.set(path + ".collectorPoint", m.collectorPoint);
-            mobsConfig.set(path + ".mutation", m.mutation);
-            mobsConfig.set(path + ".snowy", m.snowy);
-            if (m.mobType.isLuckyBlock()) {
-                mobsConfig.set(path + ".luckyBlockTimer", m.luckyBlockRemainingMs);
-                mobsConfig.set(path + ".luckyBlockReady", m.luckyBlockReady);
-            }
-        }
-        try { saveConfigAsync(mobsConfig, mobsFile); } catch (IOException e) {}
+        writeSavedMobsSection(playerName, mobs);
     }
     public void adminSetMutation(String playerName, int index, String mutationName, boolean snowy) {
         if (mobsConfig == null || savedPlayerMobs == null) return;
@@ -8609,6 +8588,10 @@ public List<String> getMobPoints(String baseName) {
     public void onJoin(PlayerJoinEvent e) {
         Player p = e.getPlayer();
         String playerName = p.getName();
+        // Отметка времени входа. Первые секунды после захода базу уже считают
+        // занятой, а мобов на ней ещё нет — сохранение в этот момент не имеет
+        // права записать «мобов ноль», см. savePlayerMobsInstantly.
+        joinTimeMs.put(playerName, System.currentTimeMillis());
         Bukkit.getScheduler().runTaskLater(this, () -> {
             debugLog("========== [JOIN DEBUG] Вход " + playerName + " ==========");
             List<SavedMobData> savedMobs = savedPlayerMobs.get(playerName);
@@ -8645,6 +8628,14 @@ public List<String> getMobPoints(String baseName) {
             }
             if (playerBase != null) {
                 debugLog("[JOIN DEBUG] База игрока: " + playerBase);
+                if (hasSavedMobs) {
+                    // Ставим щит ДО removeAllMobsFromBase: между снятием старых мобов
+                    // и восстановлением есть окно (у applyStage вставка схематики
+                    // асинхронная), и любое сохранение, попавшее в это окно, увидело бы
+                    // базу с нулём живых мобов и стёрло бы весь список.
+                    restoringMobs.add(playerName);
+                    Bukkit.getScheduler().runTaskLater(this, () -> restoringMobs.remove(playerName), 200L);
+                }
                 removeAllMobsFromBase(playerBase);
                 Set<String> occupied = occupiedMobPoints.get(playerBase);
                 if (occupied != null) occupied.clear();
@@ -8668,6 +8659,13 @@ public List<String> getMobPoints(String baseName) {
                 Set<String> occupied = occupiedMobPoints.get(selectedBase);
                 if (occupied != null) occupied.clear();
                 clearAllAuctionListingsForBase(selectedBase);
+                if (hasSavedMobs) {
+                    // Тот же щит, что и на своей базе: с этой строки база уже
+                    // числится за игроком, а мобов на ней ещё нет.
+                    // moveSavedMobsToNewBase поставит флаг ещё раз — это безопасно.
+                    restoringMobs.add(playerName);
+                    Bukkit.getScheduler().runTaskLater(this, () -> restoringMobs.remove(playerName), 200L);
+                }
                 bases.put(selectedBase, playerName);
                 teleportToBaseSpawn(p, selectedBase);
                 updateHologram(selectedBase);
@@ -8797,7 +8795,39 @@ public List<String> getMobPoints(String baseName) {
         lastStealMessage.remove(p);
         sellMenuEntity.remove(p);
         stealingPlayers.remove(p);
+        joinTimeMs.remove(playerName);
         debugLog("========== [QUIT DEBUG] Завершено ==========");
+    }
+    /**
+     * Пишет список мобов игрока в mobs.yml: секция mobs.&lt;игрок&gt; перезаписывается целиком.
+     * Вынесено отдельно, чтобы формат записи был один на все пути сохранения —
+     * раньше он был скопирован в четырёх местах и в двух из них терялась мутация.
+     */
+    private void writeSavedMobsSection(String playerName, List<SavedMobData> mobs) {
+        if (mobsConfig == null || playerName == null) return;
+        mobsConfig.set("mobs." + playerName, null);
+        if (mobs != null) {
+            for (int i = 0; i < mobs.size(); i++) {
+                SavedMobData m = mobs.get(i);
+                if (m == null || m.mobType == null) continue;
+                String path = "mobs." + playerName + "." + i;
+                mobsConfig.set(path + ".base", m.base);
+                mobsConfig.set(path + ".mobPoint", m.mobPoint);
+                mobsConfig.set(path + ".mobType", m.mobType.name());
+                mobsConfig.set(path + ".collectorPoint", m.collectorPoint);
+                mobsConfig.set(path + ".mutation", m.mutation);
+                mobsConfig.set(path + ".snowy", m.snowy);
+                if (m.mobType.isLuckyBlock()) {
+                    mobsConfig.set(path + ".luckyBlockTimer", m.luckyBlockRemainingMs);
+                    mobsConfig.set(path + ".luckyBlockReady", m.luckyBlockReady);
+                }
+            }
+        }
+        try {
+            saveConfigAsync(mobsConfig, mobsFile);
+        } catch (IOException e) {
+            getLogger().severe("ОШИБКА записи mobs.yml: " + e.getMessage());
+        }
     }
     private void savePlayerMobsInstantly(String playerName) {
         if (playerName == null || playerName.isEmpty()) return;
@@ -8815,21 +8845,25 @@ public List<String> getMobPoints(String baseName) {
             }
         }
         if (playerBase == null) {
-            mobsConfig.set("mobs." + playerName, null);
-            savedPlayerMobs.remove(playerName);
-            try {
-                saveConfigAsync(mobsConfig, mobsFile);
-            } catch (IOException e) {
-                getLogger().severe("ОШИБКА записи mobs.yml (no base): " + e.getMessage());
-            }
+            // ЗДЕСЬ ТЕРЯЛИСЬ МОБЫ. При выходе игрока база отпускается
+            // (bases.put(base, "none")), а сохранения, отложенные на 5-10 тиков
+            // при спавне моба и в колбэках анимаций лаки-блока, прилетают уже
+            // после этого. Такое сохранение базы не находило и вычищало и
+            // mobs.yml, и память — игрок заходил на пустую базу.
+            // Теперь «нет базы» значит «сохранять нечего», а не «удалить всё».
+            // Осознанная очистка при перерождении делается отдельно и осталась.
+            debugLog("savePlayerMobsInstantly: у " + playerName + " сейчас нет базы — сохранение пропущено, данные не тронуты");
+            return;
+        }
+        if (restoringMobs.contains(playerName)) {
+            debugLog("savePlayerMobsInstantly: для " + playerName + " идёт восстановление — сохранение пропущено");
             return;
         }
         List<String> basePoints = baseMobSpawnPoints.get(playerBase);
         if (basePoints == null) basePoints = Collections.emptyList();
-        mobsConfig.set("mobs." + playerName, null);
-        List<SavedMobData> inMemory = new ArrayList<>();
+        List<SavedMobData> previous = savedPlayerMobs.get(playerName);
+        List<SavedMobData> live = new ArrayList<>();
         Map<Entity, String> snapshot = new HashMap<>(entityToPointMap);
-        int savedCount = 0;
         long currentTime = System.currentTimeMillis();
         for (Map.Entry<Entity, String> entry : snapshot.entrySet()) {
             Entity mob = entry.getKey();
@@ -8847,16 +8881,8 @@ public List<String> getMobPoints(String baseName) {
                     collectorPoint = parts[1];
                 }
             }
-            String path = "mobs." + playerName + "." + savedCount;
-            mobsConfig.set(path + ".base", playerBase);
-            mobsConfig.set(path + ".mobPoint", mobPoint);
-            mobsConfig.set(path + ".mobType", type.name());
-            mobsConfig.set(path + ".collectorPoint", collectorPoint);
-            Mutation mutation = baseMobMutations.getOrDefault(mob, Mutation.NONE);
             boolean snowy = baseMobSnowy.getOrDefault(mob, false);
             String mutationSerialized = serializeMobMutation(mob);
-            mobsConfig.set(path + ".mutation", mutationSerialized);
-            mobsConfig.set(path + ".snowy", snowy);
             long lbRemainingMs = -1L;
             boolean lbReady = false;
             if (type.isLuckyBlock()) {
@@ -8865,46 +8891,73 @@ public List<String> getMobPoints(String baseName) {
                 if (isReady) {
                     lbReady = true;
                     lbRemainingMs = 0L;
-                    mobsConfig.set(path + ".luckyBlockReady", true);
-                    mobsConfig.set(path + ".luckyBlockTimer", 0L);
                 } else if (openTime > 0) {
                     long remaining = openTime - currentTime;
                     if (remaining > 0) {
-                        lbReady = false;
                         lbRemainingMs = remaining;
-                        mobsConfig.set(path + ".luckyBlockReady", false);
-                        mobsConfig.set(path + ".luckyBlockTimer", remaining);
                     } else {
                         lbReady = true;
                         lbRemainingMs = 0L;
-                        mobsConfig.set(path + ".luckyBlockReady", true);
-                        mobsConfig.set(path + ".luckyBlockTimer", 0L);
                     }
                 } else {
-                    lbReady = false;
                     lbRemainingMs = LUCKY_BLOCK_TIMER;
-                    mobsConfig.set(path + ".luckyBlockReady", false);
-                    mobsConfig.set(path + ".luckyBlockTimer", LUCKY_BLOCK_TIMER);
                 }
             }
-            if (type.isLuckyBlock()) {
-                inMemory.add(new SavedMobData(playerBase, mobPoint, collectorPoint, type, lbRemainingMs, lbReady, mutationSerialized, snowy));
-            } else {
-                inMemory.add(new SavedMobData(playerBase, mobPoint, collectorPoint, type, -1L, false, mutationSerialized, snowy));
-            }
-            savedCount++;
+            live.add(new SavedMobData(playerBase, mobPoint, collectorPoint, type,
+                    lbRemainingMs, lbReady, mutationSerialized, snowy));
         }
-        if (inMemory.isEmpty()) {
+        // Мобы, которых обход живых сущностей не может увидеть в принципе:
+        //  • точка не принадлежит текущей базе — не хватило слотов при переезде
+        //    или это точка второго этажа, а этаж сейчас снят;
+        //  • точка занята анимацией спавна (лаки-блок, гнилоход) и сущность
+        //    ещё не зарегистрирована в entityToPointMap.
+        // Раньше такие мобы сохранение просто удаляло. Теперь переносим как есть —
+        // они вернутся, когда точка появится или анимация закончится.
+        List<SavedMobData> carried = new ArrayList<>();
+        if (previous != null) {
+            Set<String> livePoints = new HashSet<>();
+            for (SavedMobData sm : live) livePoints.add(sm.mobPoint);
+            for (SavedMobData sm : previous) {
+                if (sm == null || sm.mobPoint == null || sm.mobType == null) continue;
+                if (livePoints.contains(sm.mobPoint)) continue;
+                if (!basePoints.contains(sm.mobPoint) || animatingPoints.contains(sm.mobPoint)) {
+                    carried.add(sm);
+                }
+            }
+        }
+        if (live.isEmpty() && carried.isEmpty() && previous != null && !previous.isEmpty()) {
+            // Ни одного живого моба, а в сохранении их целый список. Для игрока
+            // онлайн это нормально (продал последнего), для офлайн — почти
+            // наверняка гонка: мобов уже сняли с базы, а сохранение только
+            // доехало. Пустоту в таком случае не пишем.
+            Player online = Bukkit.getPlayerExact(playerName);
+            if (online == null || !online.isOnline()) {
+                getLogger().warning("Сохранение мобов " + playerName + " пропущено: игрок офлайн, живых мобов 0, "
+                        + "а в сохранении их " + previous.size() + " — данные не тронуты");
+                return;
+            }
+            // Игрок только что зашёл: восстановление могло ещё не доехать
+            // (схематика второго этажа вставляется асинхронно). Сносить весь
+            // список из-за этого нельзя — следующее сохранение всё равно
+            // приведёт файл в порядок, когда мобы встанут на точки.
+            Long joined = joinTimeMs.get(playerName);
+            if (joined != null && System.currentTimeMillis() - joined < SAVE_WIPE_GRACE_MS) {
+                getLogger().warning("Сохранение мобов " + playerName + " пропущено: игрок вошёл "
+                        + ((System.currentTimeMillis() - joined) / 1000) + " с назад, живых мобов 0, "
+                        + "а в сохранении их " + previous.size() + " — данные не тронуты");
+                return;
+            }
+        }
+        List<SavedMobData> result = new ArrayList<>(live);
+        result.addAll(carried);
+        if (result.isEmpty()) {
             savedPlayerMobs.remove(playerName);
         } else {
-            savedPlayerMobs.put(playerName, inMemory);
+            savedPlayerMobs.put(playerName, result);
         }
-        try {
-            saveConfigAsync(mobsConfig, mobsFile);
-            debugLog("Сохранено " + savedCount + " мобов для игрока " + playerName);
-        } catch (IOException e) {
-            getLogger().severe("ОШИБКА записи mobs.yml: " + e.getMessage());
-        }
+        writeSavedMobsSection(playerName, result);
+        debugLog("Сохранено " + live.size() + " мобов для игрока " + playerName
+                + (carried.isEmpty() ? "" : " (+" + carried.size() + " ждут свободной точки)"));
     }
     private boolean hasClearInteractionPath(Player player, Entity target, double maxDistance) {
         if (player == null || target == null) return false;
@@ -9087,6 +9140,88 @@ public List<String> getMobPoints(String baseName) {
             });
         }
     }
+    /** Сколько резервных копий mobs.yml держать в папке mobs_backups. */
+    private static final int MOBS_BACKUP_KEEP = 10;
+    private File mobsBackupDir() {
+        return new File(getDataFolder(), "mobs_backups");
+    }
+    /**
+     * Копия mobs.yml с отметкой времени. Делается при каждом старте сервера и по
+     * команде /savemobs backup. Хранится последние {@link #MOBS_BACKUP_KEEP} штук —
+     * этого хватает, чтобы откатить потерю мобов, замеченную через несколько
+     * перезаходов, а не только сразу.
+     */
+    private void backupMobsFile() {
+        try {
+            if (mobsFile == null || !mobsFile.exists() || mobsFile.length() == 0) return;
+            File dir = mobsBackupDir();
+            if (!dir.exists() && !dir.mkdirs()) {
+                getLogger().warning("Не удалось создать папку " + dir.getName() + " для резервных копий мобов");
+                return;
+            }
+            String stamp = new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(new java.util.Date());
+            File target = new File(dir, "mobs-" + stamp + ".yml");
+            java.nio.file.Files.copy(mobsFile.toPath(), target.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            getLogger().info("Резервная копия мобов: mobs_backups/" + target.getName());
+            File[] all = dir.listFiles((d, n) -> n.startsWith("mobs-") && n.endsWith(".yml"));
+            if (all != null && all.length > MOBS_BACKUP_KEEP) {
+                java.util.Arrays.sort(all, java.util.Comparator.comparingLong(File::lastModified));
+                for (int i = 0; i < all.length - MOBS_BACKUP_KEEP; i++) {
+                    if (!all[i].delete()) {
+                        getLogger().warning("Не удалось удалить старую копию " + all[i].getName());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            getLogger().warning("Не удалось сделать резервную копию mobs.yml: " + e.getMessage());
+        }
+    }
+    /** Копии от новых к старым. */
+    private List<File> listMobsBackups() {
+        File dir = mobsBackupDir();
+        File[] all = dir.listFiles((d, n) -> n.startsWith("mobs-") && n.endsWith(".yml"));
+        List<File> result = new ArrayList<>();
+        if (all != null) {
+            result.addAll(Arrays.asList(all));
+            result.sort(java.util.Comparator.comparingLong(File::lastModified).reversed());
+        }
+        return result;
+    }
+    /** Ищет игрока в секции mobs без учёта регистра — админ вряд ли наберёт ник точь-в-точь. */
+    private String findMobsSectionKey(FileConfiguration cfg, String playerName) {
+        ConfigurationSection root = cfg.getConfigurationSection("mobs");
+        if (root == null) return null;
+        for (String key : root.getKeys(false)) {
+            if (key.equalsIgnoreCase(playerName)) return key;
+        }
+        return null;
+    }
+    /** Читает мобов одного игрока из произвольного конфига (боевого или резервного). */
+    private List<SavedMobData> readSavedMobsFrom(FileConfiguration cfg, String sectionKey) {
+        List<SavedMobData> result = new ArrayList<>();
+        ConfigurationSection section = cfg.getConfigurationSection("mobs." + sectionKey);
+        if (section == null) return result;
+        for (String index : section.getKeys(false)) {
+            String path = "mobs." + sectionKey + "." + index;
+            String base = cfg.getString(path + ".base");
+            String mobPoint = cfg.getString(path + ".mobPoint");
+            String collectorPoint = cfg.getString(path + ".collectorPoint");
+            String mobTypeName = cfg.getString(path + ".mobType");
+            if (base == null || mobPoint == null || mobTypeName == null) continue;
+            try {
+                MobType type = MobType.valueOf(mobTypeName);
+                result.add(new SavedMobData(base, mobPoint, collectorPoint, type,
+                        cfg.getLong(path + ".luckyBlockTimer", -1L),
+                        cfg.getBoolean(path + ".luckyBlockReady", false),
+                        cfg.getString(path + ".mutation", "NONE"),
+                        cfg.getBoolean(path + ".snowy", false)));
+            } catch (IllegalArgumentException ignored) {
+                getLogger().warning("Неизвестный тип моба " + mobTypeName + " в резервной копии (" + sectionKey + ")");
+            }
+        }
+        return result;
+    }
     private void registerSaveCommand() {
         PluginCommand command = getCommand("savemobs");
         if (command != null) {
@@ -9097,8 +9232,144 @@ public List<String> getMobPoints(String baseName) {
                         sender.sendMessage("§cНет прав!");
                         return true;
                     }
-                    saveAllMobsToFile();
-                    sender.sendMessage("§aВсе мобы сохранены в mobs.yml!");
+                    if (args.length == 0) {
+                        saveAllMobsToFile();
+                        sender.sendMessage("§aВсе мобы сохранены в mobs.yml!");
+                        return true;
+                    }
+                    String sub = args[0].toLowerCase();
+                    if (sub.equals("backup")) {
+                        backupMobsFile();
+                        sender.sendMessage("§aРезервная копия mobs.yml создана.");
+                        return true;
+                    }
+                    if (sub.equals("backups")) {
+                        List<File> backups = listMobsBackups();
+                        if (backups.isEmpty()) {
+                            sender.sendMessage("§eРезервных копий пока нет.");
+                            return true;
+                        }
+                        sender.sendMessage("§6Резервные копии (новые сверху):");
+                        for (int i = 0; i < backups.size(); i++) {
+                            sender.sendMessage("§7 " + (i + 1) + ". §f" + backups.get(i).getName()
+                                    + " §7(" + (backups.get(i).length() / 1024) + " КБ)");
+                        }
+                        return true;
+                    }
+                    if (sub.equals("list")) {
+                        if (args.length < 2) {
+                            sender.sendMessage("§cИспользование: /savemobs list <игрок> [файл]");
+                            return true;
+                        }
+                        String target = args[1];
+                        List<SavedMobData> current = savedPlayerMobs.get(target);
+                        if (current == null) {
+                            for (Map.Entry<String, List<SavedMobData>> e : savedPlayerMobs.entrySet()) {
+                                if (e.getKey().equalsIgnoreCase(target)) { current = e.getValue(); break; }
+                            }
+                        }
+                        sender.sendMessage("§6Сейчас в памяти: §f"
+                                + (current == null ? 0 : current.size()) + " мобов");
+                        FileConfiguration src;
+                        String label2;
+                        if (args.length >= 3) {
+                            File f = new File(mobsBackupDir(), args[2]);
+                            if (!f.exists()) {
+                                sender.sendMessage("§cНет такой копии: " + args[2]);
+                                return true;
+                            }
+                            src = YamlConfiguration.loadConfiguration(f);
+                            label2 = f.getName();
+                        } else {
+                            List<File> backups = listMobsBackups();
+                            if (backups.isEmpty()) {
+                                sender.sendMessage("§eРезервных копий пока нет.");
+                                return true;
+                            }
+                            src = YamlConfiguration.loadConfiguration(backups.get(0));
+                            label2 = backups.get(0).getName();
+                        }
+                        String key = findMobsSectionKey(src, target);
+                        if (key == null) {
+                            sender.sendMessage("§eВ копии §f" + label2 + " §eигрока нет.");
+                            return true;
+                        }
+                        List<SavedMobData> fromBackup = readSavedMobsFrom(src, key);
+                        sender.sendMessage("§6В копии §f" + label2 + "§6: §f" + fromBackup.size() + " мобов");
+                        for (SavedMobData m : fromBackup) {
+                            sender.sendMessage("§7 • §f" + m.mobType.name() + " §7база " + m.base
+                                    + ", точка " + m.mobPoint
+                                    + (m.mutation != null && !m.mutation.equals("NONE") ? " §d[" + m.mutation + "]" : ""));
+                        }
+                        return true;
+                    }
+                    if (sub.equals("restore")) {
+                        if (args.length < 2) {
+                            sender.sendMessage("§cИспользование: /savemobs restore <игрок> [файл]");
+                            return true;
+                        }
+                        String target = args[1];
+                        File file;
+                        if (args.length >= 3) {
+                            file = new File(mobsBackupDir(), args[2]);
+                            if (!file.exists()) {
+                                sender.sendMessage("§cНет такой копии: " + args[2]);
+                                return true;
+                            }
+                        } else {
+                            List<File> backups = listMobsBackups();
+                            if (backups.isEmpty()) {
+                                sender.sendMessage("§eРезервных копий пока нет.");
+                                return true;
+                            }
+                            file = backups.get(0);
+                        }
+                        FileConfiguration src = YamlConfiguration.loadConfiguration(file);
+                        String key = findMobsSectionKey(src, target);
+                        if (key == null) {
+                            sender.sendMessage("§cВ копии " + file.getName() + " нет игрока " + target);
+                            return true;
+                        }
+                        List<SavedMobData> restored = readSavedMobsFrom(src, key);
+                        if (restored.isEmpty()) {
+                            sender.sendMessage("§cВ копии у игрока " + key + " ноль мобов — восстанавливать нечего.");
+                            return true;
+                        }
+                        // Перед откатом кладём текущее состояние в копию: если админ
+                        // ошибся файлом, откатить откат будет чем.
+                        backupMobsFile();
+                        savedPlayerMobs.put(key, restored);
+                        writeSavedMobsSection(key, restored);
+                        sender.sendMessage("§aВосстановлено " + restored.size() + " мобов игрока §e" + key
+                                + " §aиз §f" + file.getName());
+                        Player online = Bukkit.getPlayerExact(key);
+                        if (online != null && online.isOnline()) {
+                            String base = findPlayerBase(online);
+                            if (base != null) {
+                                restoringMobs.add(key);
+                                // Страховка: если отложенная задача почему-то не отработает,
+                                // флаг снимется сам и сохранения не заблокируются навсегда.
+                                Bukkit.getScheduler().runTaskLater(BrainrotBases.this,
+                                        () -> restoringMobs.remove(key), 200L);
+                                removeAllMobsFromBase(base);
+                                Set<String> occupied = occupiedMobPoints.get(base);
+                                if (occupied != null) occupied.clear();
+                                Bukkit.getScheduler().runTaskLater(BrainrotBases.this,
+                                        () -> restorePlayerMobs(key), 20L);
+                                sender.sendMessage("§7Игрок онлайн — мобы возвращены на базу " + base + ".");
+                            } else {
+                                sender.sendMessage("§7Игрок онлайн, но без базы — мобы появятся при следующем заходе.");
+                            }
+                        } else {
+                            sender.sendMessage("§7Игрок офлайн — мобы появятся при следующем заходе.");
+                        }
+                        return true;
+                    }
+                    sender.sendMessage("§6/savemobs §7— сохранить всех мобов сейчас");
+                    sender.sendMessage("§6/savemobs backup §7— сделать резервную копию mobs.yml");
+                    sender.sendMessage("§6/savemobs backups §7— список копий");
+                    sender.sendMessage("§6/savemobs list <игрок> [файл] §7— что лежит в копии");
+                    sender.sendMessage("§6/savemobs restore <игрок> [файл] §7— вернуть мобов из копии");
                     return true;
                 }
             });

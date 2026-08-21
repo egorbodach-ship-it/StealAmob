@@ -85,6 +85,11 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private final Map<String, Deque<MobData>> spawnQueues = new HashMap<>();
     private final Map<Entity, String> mobToSpawner = new HashMap<>();
 
+    // Дорожки, которые завёл ивент (BrainrotEvents -> addEventConveyor). Живут только
+    // в памяти: в config.yml не пишутся, таймеров гарантированного легендарного и
+    // мифического не получают, при остановке ивента убираются вместе со своими мобами.
+    private final Set<String> eventConveyorIds = new HashSet<>();
+
     private static BrainrotSpawner instance;
 
     private final Map<Entity, List<ArmorStand>> mobNameTags = new HashMap<>();
@@ -152,6 +157,13 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     // кэширует по SHA-1. Поворот же подложки ME отрабатывает сам.
     private float meYawOffset = 180.0f;
 
+    // Жёсткий перезапуск walk раз в N секунд (config: modelengine.walk-resync-seconds).
+    // По умолчанию 0 — выключено, потому что перезапуск сбрасывает цикл в начало и
+    // походка на один кадр дёргается. Мягкой страховки (keepAlive) хватает, пока ME
+    // честно отвечает «walk не играю». Если же он будет считать, что цикл идёт, а на
+    // экране самовар стоит столбом, мягкий запрос не поможет — тогда включаем это.
+    private int meWalkResyncSeconds = 0;
+
     private final Map<Entity, Entity> rotWalkerHitboxMap = new HashMap<>();
     private final Map<Entity, BukkitRunnable> rotWalkerAnimTasks = new HashMap<>();
     private static final String ROT_WALKER_ROOT_TAG = "aj.rotwalker.root";
@@ -181,12 +193,16 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         }
     }
 
+    // Сетка шансов в сумме даёт ровно 100 — selectRarity нормализует по сумме, но
+    // logMobChances печатает эти числа как проценты, поэтому сумму держим честной.
+    // Мифик урезан с 1.89 до 0.89, освободившийся процент отдан Обычному (55 -> 56):
+    // экономику это не задевает, а мифики перестают лезть из каждой второй волны.
     private enum Rarity {
-        COMMON("Обычный", "§a", 55.0),
+        COMMON("Обычный", "§a", 56.0),
         RARE("Редкий", "§9", 25.0),
         EPIC("Эпический", "§5", 13.0),
         LEGENDARY("Легендарный", "§6§l", 5.0),
-        MYTHICAL("✦ Мифический ✦", "§d§l", 1.89),
+        MYTHICAL("✦ Мифический ✦", "§d§l", 0.89),
         BRAINROT_GOD("✧ Божественный ✧", "§b§l", 0.10),
         SECRET("☠ Секретный ☠", "§8§l", 0.01),
         EVENT("Ивентовый", "§2§l", 0.0);
@@ -438,6 +454,11 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private boolean isMythicalGuaranteed(String spawnerId) {
         Integer ticks = mythicalTicksLeft.get(spawnerId);
         return ticks != null && ticks <= 0;
+    }
+
+    /** Мифик и всё, что реже него. EVENT сюда не входит: это служебный тир без шанса. */
+    private boolean isMythicalOrBetter(Rarity r) {
+        return r == Rarity.MYTHICAL || r == Rarity.BRAINROT_GOD || r == Rarity.SECRET;
     }
 
     private void startHologramUpdateTask() {
@@ -988,6 +1009,11 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             saveConfig();
         }
         meYawOffset = (float) cfg.getDouble("modelengine.yaw-offset", 180);
+        if (!cfg.contains("modelengine.walk-resync-seconds")) {
+            cfg.set("modelengine.walk-resync-seconds", 0);
+            saveConfig();
+        }
+        meWalkResyncSeconds = cfg.getInt("modelengine.walk-resync-seconds", 0);
         if (cfg.contains("spawners")) {
             for (String id : cfg.getConfigurationSection("spawners").getKeys(false)) {
                 String path = "spawners." + id + ".";
@@ -1029,6 +1055,12 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     }
 
     private void saveSpawnerConfig(SpawnerConfig config) {
+        // Ивентовые дорожки в конфиг не попадают: иначе после ивента в config.yml
+        // навсегда останется конвейер, которого в мире уже нет.
+        if (eventConveyorIds.contains(config.getId())) {
+            getLogger().info("[BRAINROT] Спавнер " + config.getId() + " ивентовый — в config.yml не пишем.");
+            return;
+        }
         String path = "spawners." + config.getId() + ".";
         getConfig().set(path + "world", config.getWorldName());
         if (config.getSpawnLoc() != null) {
@@ -1123,6 +1155,11 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             }
         }
         if (selectedMob == null) return;
+        // Гарант больше не капает поверх удачи. Раньше mythicalTicksLeft сбрасывался
+        // только самим гарантом, поэтому натурально выпавшие мифики таймер не
+        // отодвигали: игрок ловил случайного мифика, а через пару минут ему всё
+        // равно приезжал гарантированный. Теперь любой мифик и выше двигает таймер.
+        if (isMythicalOrBetter(selectedMob.rarity)) resetMythicalTimer(spawnerId);
         final Mutation mutation = selectMutation();
         if (selectedMob.isFlyingBlock()) {
             final MobData mobType = selectedMob;
@@ -1689,6 +1726,15 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                     long phase = tick % 240L;
                     if (phase < 110L || phase > 170L) ModelEngineHook.keepAlive(finalMob, "walk");
                 }
+                // Аварийный жёсткий перезапуск (выключен по умолчанию, см.
+                // modelengine.walk-resync-seconds). Мягкую страховку выше ME отшивает,
+                // если считает цикл идущим, — этот запрос идёт с force и поднимает
+                // походку в любом случае, ценой одного дёрганого кадра.
+                if (meWalkResyncSeconds > 0 && ModelEngineHook.hasModel(finalMob)
+                        && tick % (meWalkResyncSeconds * 20L) == 0L) {
+                    long phase = tick % 240L;
+                    if (phase < 110L || phase > 170L) ModelEngineHook.loop(finalMob, "walk");
+                }
                 Vector dirVec = getDirectionVector(direction);
                 double baseY = spawnLoc.getY();
                 traveledDistance += speed;
@@ -2191,6 +2237,16 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 Mutation base = mobMutations.getOrDefault(mob, Mutation.NONE);
                 tickMutationParticles(mob, base, tick);
                 for (Mutation extra : getExtraMutations(mob)) tickMutationParticles(mob, extra, tick);
+                // Задача движения по дорожке отменена в sendMobToBase, а вместе с ней
+                // ушёл и присмотр за анимацией. Поэтому страховку надо повторить здесь:
+                // доставка — это ровно тот «конец», на котором walk и пропадал.
+                if (ModelEngineHook.hasModel(mob) && tick % 80L == 40L) {
+                    ModelEngineHook.keepAlive(mob, "walk");
+                }
+                if (meWalkResyncSeconds > 0 && ModelEngineHook.hasModel(mob)
+                        && tick % (meWalkResyncSeconds * 20L) == 0L) {
+                    ModelEngineHook.loop(mob, "walk");
+                }
                 double dx = dest.getX() - lastLoc.getX();
                 double dz = dest.getZ() - lastLoc.getZ();
                 double dist = Math.sqrt(dx * dx + dz * dz);
@@ -2205,6 +2261,12 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 Location targetLoc = lastLoc.clone().add(dx * speed, 0, dz * speed);
                 targetLoc.setY(fixedY);
                 float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+                // Разворот моделей ME здесь нужен ровно так же, как на дорожке: доставка
+                // считает yaw сама, из направления на точку сдачи, и про смещение не
+                // знает — из-за этого купленный самовар ехал на базу спиной вперёд.
+                if (data != null && data.modelEngineBlueprint() != null && meYawOffset != 0.0f) {
+                    yaw = Location.normalizeYaw(yaw + meYawOffset);
+                }
                 targetLoc.setYaw(yaw);
                 if (data == MobData.ROT_WALKER) {
                     String uniq = getRotWalkerUniqTag(mob);
@@ -2381,6 +2443,8 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 s.sendMessage("§6/brainrotspawn meganim <анимация> §7— проиграть анимацию вживую");
                 s.sendMessage("§6/brainrotspawn samoyaw <градусы> §7— разворот моделей ME (сейчас "
                         + (int) meYawOffset + "°)");
+                s.sendMessage("§6/brainrotspawn samoresync <секунды> §7— аварийный перезапуск walk (сейчас "
+                        + (meWalkResyncSeconds > 0 ? meWalkResyncSeconds + " с" : "выкл") + ")");
                 return true;
             }
             if (a[0].equalsIgnoreCase("dragoninvert")) {
@@ -2427,6 +2491,26 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 getConfig().set("modelengine.yaw-offset", (double) val);
                 saveConfig();
                 s.sendMessage("§aРазворот моделей ME: §f" + (int) val + "° §7(применится в течение тика)");
+                return true;
+            }
+            if (a[0].equalsIgnoreCase("samoresync")) {
+                if (a.length < 2) {
+                    s.sendMessage("§eЖёсткий перезапуск walk: §f"
+                            + (meWalkResyncSeconds > 0 ? "раз в " + meWalkResyncSeconds + " с" : "выключен"));
+                    s.sendMessage("§7Нужен, только если walk обрывается и мягкая страховка его не поднимает.");
+                    s.sendMessage("§7Цена — походка дёргается на кадр при каждом перезапуске.");
+                    s.sendMessage("§7Пример: §f/brainrotspawn samoresync 20§7, выключить — §f0");
+                    return true;
+                }
+                int val;
+                try { val = Integer.parseInt(a[1]); }
+                catch (NumberFormatException ex) { s.sendMessage("§cНужно целое число секунд."); return true; }
+                if (val < 0) val = 0;
+                meWalkResyncSeconds = val;
+                getConfig().set("modelengine.walk-resync-seconds", val);
+                saveConfig();
+                s.sendMessage("§aЖёсткий перезапуск walk: §f"
+                        + (val > 0 ? "раз в " + val + " с" : "выключен"));
                 return true;
             }
             if (a[0].equalsIgnoreCase("megdebug")) {
@@ -2689,6 +2773,136 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             out.add(cfg.getDespawnLoc().clone());
         }
         return out;
+    }
+
+    // ===== API для BrainrotEvents: временные дорожки конвейера на время ивента =====
+
+    /** Id всех спавнеров: и постоянных, и ивентовых. */
+    public List<String> getSpawnerIds() {
+        return new ArrayList<>(spawnerConfigs.keySet());
+    }
+
+    /** Только постоянные спавнеры — с них ивент наследует скорость и кулдаун. */
+    public List<String> getPermanentSpawnerIds() {
+        List<String> out = new ArrayList<>();
+        for (String id : spawnerConfigs.keySet()) if (!eventConveyorIds.contains(id)) out.add(id);
+        return out;
+    }
+
+    /** Скорость дорожки, 0 если такой дорожки нет. */
+    public double getSpawnerSpeed(String id) {
+        SpawnerConfig cfg = (id == null) ? null : spawnerConfigs.get(id.toLowerCase(Locale.ROOT));
+        return cfg != null ? cfg.getSpeed() : 0.0;
+    }
+
+    /** Кулдаун спавна в тиках, 0 если такой дорожки нет. */
+    public long getSpawnerCooldownTicks(String id) {
+        SpawnerConfig cfg = (id == null) ? null : spawnerConfigs.get(id.toLowerCase(Locale.ROOT));
+        return cfg != null ? cfg.getCooldownTicks() : 0L;
+    }
+
+    /** Мир дорожки, null если такой дорожки нет. */
+    public String getSpawnerWorldName(String id) {
+        SpawnerConfig cfg = (id == null) ? null : spawnerConfigs.get(id.toLowerCase(Locale.ROOT));
+        return cfg != null ? cfg.getWorldName() : null;
+    }
+
+    /** Это временная ивентовая дорожка? */
+    public boolean isEventConveyor(String id) {
+        return id != null && eventConveyorIds.contains(id.toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * Направление конвейера по разнице точек: дорожка всегда идёт по одной оси,
+     * поэтому берём ту, где смещение больше. Названия совпадают с теми, что
+     * понимают getDirectionVector/getYawFromDirection.
+     */
+    public String directionBetween(Location from, Location to) {
+        if (from == null || to == null) return "forward";
+        double dx = to.getX() - from.getX();
+        double dz = to.getZ() - from.getZ();
+        if (Math.abs(dx) >= Math.abs(dz)) return dx >= 0 ? "right" : "left";
+        return dz >= 0 ? "forward" : "back";
+    }
+
+    /**
+     * Заводит временную дорожку конвейера. Такая дорожка живёт только в памяти:
+     * saveSpawnerConfig её игнорирует, голограммы у неё нет и — главное —
+     * initializeTimers для неё не вызывается, поэтому гарантированные легендарный
+     * и мифический на ней не срабатывают никогда (isXGuaranteed без записи в мапе
+     * возвращает false). Иначе каждая новая дорожка приносила бы свой гарант и
+     * работала бы против урезанного шанса мифика.
+     * Возвращает false, если id занят постоянным спавнером или точки битые.
+     */
+    public boolean addEventConveyor(String id, Location spawn, Location despawn,
+                                    double speed, String direction, long cooldownTicks) {
+        if (id == null || id.trim().isEmpty() || spawn == null || despawn == null) return false;
+        if (spawn.getWorld() == null || despawn.getWorld() == null) return false;
+        if (!spawn.getWorld().getName().equals(despawn.getWorld().getName())) {
+            getLogger().warning("[BRAINROT] addEventConveyor: спавн и конец в разных мирах.");
+            return false;
+        }
+        String key = id.trim().toLowerCase(Locale.ROOT);
+        if (spawnerConfigs.containsKey(key) && !eventConveyorIds.contains(key)) {
+            getLogger().warning("[BRAINROT] addEventConveyor: id " + key + " занят постоянным спавнером.");
+            return false;
+        }
+        // Повторный запуск с тем же id — сначала аккуратно снимаем старую дорожку.
+        if (eventConveyorIds.contains(key)) removeEventConveyor(key);
+        SpawnerConfig cfg = new SpawnerConfig(key, spawn.getWorld().getName());
+        cfg.setSpawnLoc(spawn.clone());
+        cfg.setDespawnLoc(despawn.clone());
+        cfg.setSpeed(speed > 0 ? speed : 0.2);
+        cfg.setDirection((direction != null && !direction.trim().isEmpty())
+                ? direction.trim().toLowerCase(Locale.ROOT)
+                : directionBetween(spawn, despawn));
+        cfg.setCooldownTicks(cooldownTicks > 0 ? cooldownTicks : 600L);
+        cfg.setEnabled(true);
+        cfg.setPaused(false);
+        if (!cfg.isValid()) return false;
+        eventConveyorIds.add(key);
+        spawnerConfigs.put(key, cfg);
+        spawnQueues.put(key, new LinkedList<>());
+        startSpawner(key);
+        getLogger().info("[BRAINROT] Ивентовая дорожка " + key + " запущена: "
+                + fmtLoc(cfg.getSpawnLoc()) + " -> " + fmtLoc(cfg.getDespawnLoc())
+                + ", скорость " + cfg.getSpeed() + ", кулдаун " + cfg.getCooldownTicks()
+                + " тиков, направление " + cfg.getDirection());
+        return true;
+    }
+
+    /**
+     * Снимает временную дорожку. Некупленных мобов с неё убирает, уже купленных не
+     * трогает: startMobDelivery берёт настройки один раз при старте доставки, так
+     * что моб доедет до базы даже без своей дорожки.
+     * Возвращает число убранных мобов или -1, если такой ивентовой дорожки нет.
+     */
+    public int removeEventConveyor(String id) {
+        if (id == null) return -1;
+        String key = id.trim().toLowerCase(Locale.ROOT);
+        if (!eventConveyorIds.remove(key)) return -1;
+        stopSpawner(key);
+        spawnerConfigs.remove(key);
+        spawnQueues.remove(key);
+        legendaryTicksLeft.remove(key);
+        mythicalTicksLeft.remove(key);
+        removeSpawnerHologram(key);
+        int cleaned = 0;
+        for (Entity mob : new ArrayList<>(mobToSpawner.keySet())) {
+            if (mob == null || !key.equals(mobToSpawner.get(mob))) continue;
+            if (mobBuyers.containsKey(mob)) continue;
+            if (mob.getScoreboardTags().contains("PURCHASED_MOB")) continue;
+            cleanupMob(mob);
+            if (mob.isValid()) mob.remove();
+            cleaned++;
+        }
+        getLogger().info("[BRAINROT] Ивентовая дорожка " + key + " снята, убрано мобов: " + cleaned);
+        return cleaned;
+    }
+
+    private String fmtLoc(Location loc) {
+        if (loc == null) return "null";
+        return String.format(Locale.US, "%.0f %.0f %.0f", loc.getX(), loc.getY(), loc.getZ());
     }
 
     public boolean hasStackableMutation(Entity mob, String mutationName) {

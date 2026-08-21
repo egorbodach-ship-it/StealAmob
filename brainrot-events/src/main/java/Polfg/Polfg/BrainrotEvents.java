@@ -1,11 +1,25 @@
 package Polfg.Polfg;
 
+import com.sk89q.worldedit.EditSession;
+import com.sk89q.worldedit.WorldEdit;
+import com.sk89q.worldedit.bukkit.BukkitAdapter;
+import com.sk89q.worldedit.extent.clipboard.Clipboard;
+import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormat;
+import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormats;
+import com.sk89q.worldedit.extent.clipboard.io.ClipboardReader;
+import com.sk89q.worldedit.function.operation.Operation;
+import com.sk89q.worldedit.function.operation.Operations;
+import com.sk89q.worldedit.math.BlockVector3;
+import com.sk89q.worldedit.session.ClipboardHolder;
+
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.Particle;
 import org.bukkit.Sound;
 import org.bukkit.SoundCategory;
 import org.bukkit.World;
+import org.bukkit.block.Block;
 import org.bukkit.boss.BarColor;
 import org.bukkit.boss.BarStyle;
 import org.bukkit.boss.BossBar;
@@ -44,6 +58,7 @@ import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -59,7 +74,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * BrainrotEvents — фоновая музыка + три ивента.
+ * BrainrotEvents — фоновая музыка + четыре ивента.
  *
  * Ивенты:
  *  • Плохая Погода — босс-бар на время ивента, дождь/гроза, молнии бьют мобов
@@ -70,6 +85,11 @@ import java.util.UUID;
  *    они синхронно прыгают, а иногда один бежит к мобу на конвейере и «взрывается»
  *    (косметика, без урона и грифинга) — моб получает мутацию «Взрывной».
  *    Реже вместо моба крипер идёт к ближайшему игроку и отбрасывает его без урона.
+ *  • 3 Тропы — босс-бар, стена спавна меняется на схему с тремя проходами, под
+ *    двумя новыми тропами кладётся красный бетон, и на время ивента поднимаются
+ *    две дополнительные дорожки конвейера. По окончании возвращается исходная
+ *    схема и дёрн, а временные дорожки снимаются. Запускается только вручную,
+ *    но может идти одновременно с остальными ивентами.
  *
  * Сами мутации живут в BrainrotSpawner (стакаются с базовой), сюда они не копируются:
  * плагин дергает публичный API спавнера через рефлексию, поэтому жёсткой зависимости нет.
@@ -92,7 +112,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private enum EventType {
         BAD_WEATHER("badweather", "Плохая Погода", "§9§l", BarColor.BLUE),
         METEOR_SHOWER("meteor", "Метеоритный Дождь", "§c§l", BarColor.RED),
-        CREEPER_PARTY("creeper", "Крипер Пати", "§a§l", BarColor.GREEN);
+        CREEPER_PARTY("creeper", "Крипер Пати", "§a§l", BarColor.GREEN),
+        THREE_ROADS("3road", "3 Тропы", "§6§l", BarColor.YELLOW);
 
         final String key;
         final String title;
@@ -110,6 +131,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (k.startsWith("плох") || k.startsWith("weather") || k.startsWith("storm")) return BAD_WEATHER;
             if (k.startsWith("метео") || k.startsWith("meteor")) return METEOR_SHOWER;
             if (k.startsWith("крип") || k.startsWith("creep") || k.startsWith("party") || k.startsWith("пати")) return CREEPER_PARTY;
+            if (k.startsWith("троп") || k.startsWith("3") || k.startsWith("три") || k.startsWith("road")
+                    || k.startsWith("tropy") || k.startsWith("path")) return THREE_ROADS;
             return null;
         }
     }
@@ -150,6 +173,16 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private BukkitTask creeperJumpTask;
     private BukkitTask creeperRefillTask;
 
+    // 3 Тропы: id временных дорожек, состояние стройки и «поколение» запуска.
+    // Поколение нужно, чтобы отложенные шаги стройки (схема -> бетон -> дорожки)
+    // не догоняли ивент, который уже успели остановить.
+    private static final String ROADS_LANE1_ID = "event3road1";
+    private static final String ROADS_LANE2_ID = "event3road2";
+    private final List<String> roadsLaneIds = new ArrayList<>();
+    private int roadsGeneration = 0;
+    private boolean roadsBusy = false;
+    private BukkitTask roadsFloorTask;
+
     // Конфиг ивентов
     private String eventsWorldName = "";
     private boolean autoEnabled = false;
@@ -185,6 +218,30 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private double creeperHitRadius = 2.0;
     private double creeperPlayerKnockback = 1.35;
     private int creeperRespawnDelay = 60;
+    // Ивент «3 Тропы»
+    private boolean roadsEnabled = true;
+    private int roadsDuration = 180;
+    private boolean roadsIncludeInAuto = false;
+    private String roadsSchemOpen = "3road";
+    private String roadsSchemClose = "roadorig";
+    private String roadsWallPos1 = "-60 51 76";
+    private String roadsWallPos2 = "-60 47 54";
+    private int roadsFloorY = 46;
+    private int roadsFloorX1 = -59;
+    private int roadsFloorX2 = 22;
+    private int roadsStrip1Z1 = 55;
+    private int roadsStrip1Z2 = 59;
+    private int roadsStrip2Z1 = 71;
+    private int roadsStrip2Z2 = 75;
+    private String roadsFloorMaterial = "RED_CONCRETE";
+    private String roadsRestoreMaterial = "GRASS_BLOCK";
+    private int roadsBlocksPerTick = 400;
+    private String roadsLane1Spawn = "-60 47 73";
+    private String roadsLane1End = "23 47 73";
+    private String roadsLane2Spawn = "-60 47 57";
+    private String roadsLane2End = "23 47 57";
+    private double roadsLaneSpeed = 0;
+    private long roadsLaneCooldown = 0;
     private String regionName = "spawn";
     private double regionPadding = 8;
     private double manualMinX = 0, manualMinZ = 0, manualMaxX = 0, manualMaxZ = 0;
@@ -302,6 +359,35 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         changed |= def("events.creeper-party.hit-radius", 2.0);
         changed |= def("events.creeper-party.player-knockback", 1.35);
         changed |= def("events.creeper-party.respawn-delay-ticks", 60);
+        // «3 Тропы»: стена спавна меняется на схему с проходами, под тропами кладётся бетон.
+        changed |= def("events.three-roads.enabled", true);
+        changed |= def("events.three-roads.duration-seconds", 180);
+        // Ивент стакается с остальными, но в авто-ротацию не идёт: запускаем руками.
+        changed |= def("events.three-roads.include-in-auto", false);
+        changed |= def("events.three-roads.schematic-open", "3road");
+        changed |= def("events.three-roads.schematic-close", "roadorig");
+        changed |= def("events.three-roads.wall.pos1", "-60 51 76");
+        changed |= def("events.three-roads.wall.pos2", "-60 47 54");
+        changed |= def("events.three-roads.floor.y", 46);
+        changed |= def("events.three-roads.floor.x1", -59);
+        changed |= def("events.three-roads.floor.x2", 22);
+        changed |= def("events.three-roads.floor.strip1-z1", 55);
+        changed |= def("events.three-roads.floor.strip1-z2", 59);
+        changed |= def("events.three-roads.floor.strip2-z1", 71);
+        changed |= def("events.three-roads.floor.strip2-z2", 75);
+        changed |= def("events.three-roads.floor.material", "RED_CONCRETE");
+        changed |= def("events.three-roads.floor.restore-material", "GRASS_BLOCK");
+        changed |= def("events.three-roads.floor.blocks-per-tick", 400);
+        changed |= def("events.three-roads.lane1.spawn", "-60 47 73");
+        changed |= def("events.three-roads.lane1.end", "23 47 73");
+        changed |= def("events.three-roads.lane2.spawn", "-60 47 57");
+        changed |= def("events.three-roads.lane2.end", "23 47 57");
+        // 0 = взять скорость и кулдаун у постоянной дорожки спавнера.
+        changed |= def("events.three-roads.lane-speed", 0.0);
+        changed |= def("events.three-roads.lane-cooldown-ticks", 0);
+        // Ставится на время стройки: если сервер упадёт, при старте вернём дёрн и схему.
+        changed |= def("events.three-roads.state.active", false);
+        changed |= def("events.three-roads.state.world", "");
         changed |= def("events.region.worldguard-region", "spawn");
         changed |= def("events.region.padding", 8);
         changed |= def("events.region.min-x", 0);
@@ -370,6 +456,29 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         creeperHitRadius     = Math.max(0.5, cfg.getDouble("events.creeper-party.hit-radius", 2.0));
         creeperPlayerKnockback = Math.max(0.1, cfg.getDouble("events.creeper-party.player-knockback", 1.35));
         creeperRespawnDelay  = Math.max(10, cfg.getInt("events.creeper-party.respawn-delay-ticks", 60));
+        roadsEnabled         = cfg.getBoolean("events.three-roads.enabled", true);
+        roadsDuration        = Math.max(5, cfg.getInt("events.three-roads.duration-seconds", 180));
+        roadsIncludeInAuto   = cfg.getBoolean("events.three-roads.include-in-auto", false);
+        roadsSchemOpen       = cfg.getString("events.three-roads.schematic-open", "3road");
+        roadsSchemClose      = cfg.getString("events.three-roads.schematic-close", "roadorig");
+        roadsWallPos1        = cfg.getString("events.three-roads.wall.pos1", "-60 51 76");
+        roadsWallPos2        = cfg.getString("events.three-roads.wall.pos2", "-60 47 54");
+        roadsFloorY          = cfg.getInt("events.three-roads.floor.y", 46);
+        roadsFloorX1         = cfg.getInt("events.three-roads.floor.x1", -59);
+        roadsFloorX2         = cfg.getInt("events.three-roads.floor.x2", 22);
+        roadsStrip1Z1        = cfg.getInt("events.three-roads.floor.strip1-z1", 55);
+        roadsStrip1Z2        = cfg.getInt("events.three-roads.floor.strip1-z2", 59);
+        roadsStrip2Z1        = cfg.getInt("events.three-roads.floor.strip2-z1", 71);
+        roadsStrip2Z2        = cfg.getInt("events.three-roads.floor.strip2-z2", 75);
+        roadsFloorMaterial   = cfg.getString("events.three-roads.floor.material", "RED_CONCRETE");
+        roadsRestoreMaterial = cfg.getString("events.three-roads.floor.restore-material", "GRASS_BLOCK");
+        roadsBlocksPerTick   = Math.max(16, cfg.getInt("events.three-roads.floor.blocks-per-tick", 400));
+        roadsLane1Spawn      = cfg.getString("events.three-roads.lane1.spawn", "-60 47 73");
+        roadsLane1End        = cfg.getString("events.three-roads.lane1.end", "23 47 73");
+        roadsLane2Spawn      = cfg.getString("events.three-roads.lane2.spawn", "-60 47 57");
+        roadsLane2End        = cfg.getString("events.three-roads.lane2.end", "23 47 57");
+        roadsLaneSpeed       = Math.max(0.0, cfg.getDouble("events.three-roads.lane-speed", 0.0));
+        roadsLaneCooldown    = Math.max(0L, cfg.getLong("events.three-roads.lane-cooldown-ticks", 0L));
         regionName           = cfg.getString("events.region.worldguard-region", "spawn");
         regionPadding        = Math.max(0, cfg.getDouble("events.region.padding", 8));
         manualMinX           = cfg.getDouble("events.region.min-x", 0);

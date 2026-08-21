@@ -362,6 +362,27 @@ public final class ModelEngineHook {
                 out.add("  " + describeMethod(m) + (args == null ? "  §7(не подставить аргументы)" : "  §aподходит"));
             }
             if (found == 0) out.add("  playAnimation НЕ НАЙДЕН НИ В ОДНОЙ ФОРМЕ");
+            // Вики ME из песочницы недоступна, поэтому список методов хендлера —
+            // единственный способ узнать, умеет ли он отвечать на вопрос «что играется
+            // прямо сейчас». Найдётся такой метод — слепую мягкую страховку walk можно
+            // будет заменить точной проверкой «цикл жив / цикл оборвался».
+            java.util.TreeSet<String> names = new java.util.TreeSet<>();
+            for (Method m : handler.getClass().getMethods()) {
+                switch (m.getName()) {
+                    case "wait", "notify", "notifyAll", "equals", "hashCode",
+                         "toString", "getClass" -> { }
+                    default -> names.add(m.getName() + "/" + m.getParameterCount());
+                }
+            }
+            StringBuilder line = new StringBuilder();
+            int inLine = 0;
+            for (String n : names) {
+                if (inLine == 6) { out.add("методы: " + line); line.setLength(0); inLine = 0; }
+                if (inLine > 0) line.append(", ");
+                line.append(n);
+                inLine++;
+            }
+            if (inLine > 0) out.add("методы: " + line);
         } catch (Throwable t) {
             out.add("ошибка разбора: " + rootCause(t));
         }
