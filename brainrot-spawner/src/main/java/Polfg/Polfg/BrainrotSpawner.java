@@ -265,6 +265,13 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         AXOLOTL("Аксолотль", EntityType.AXOLOTL, 3500000, 12000, 0.5, Rarity.MYTHICAL),
         WARDEN("Варден", EntityType.WARDEN, 5000000, 15000, 0.3, Rarity.MYTHICAL),
 
+        // ── Божественный ──────────────────────────────────────────────────
+        // Подложка — HUSK: не горит на солнце (в отличие от зомби), живая
+        // сущность, поэтому setupMob гасит ей ИИ и гравитацию как всем прочим,
+        // и по ней исправно приходит PlayerInteractAtEntityEvent. Саму её
+        // ModelEngine прячет, игрок видит только модель самовара.
+        SAMOVARUS("Самоварус Максимус", EntityType.HUSK, 40_000_000L, 120_000L, 100, Rarity.BRAINROT_GOD),
+
         ENDER_DRAGON("Эндер Дракон", EntityType.ENDER_DRAGON, 250_000_000_000L, 1_000_000_000L, 100, Rarity.SECRET),
 
         ROT_WALKER("Гнилоход", EntityType.ITEM_DISPLAY, 9999999, 50000, 0.0, Rarity.EVENT);
@@ -289,6 +296,15 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             return this == SPONGE || this == ROT_WALKER;
         }
 
+        /**
+         * id блюпринта ModelEngine или null, если моб ванильный.
+         * Держим отдельным методом, а не полем в конструкторе, чтобы не
+         * переписывать все шесть десятков существующих строк enum'а.
+         */
+        public String modelEngineBlueprint() {
+            return this == SAMOVARUS ? "samovarus_maximus" : null;
+        }
+
         public double getEntityHeight() {
             return switch (this) {
                 case STRAY -> 1.99; case HUSK -> 1.95; case RAVAGER -> 2.2; case IRON_GOLEM -> 2.7;
@@ -309,6 +325,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 case FROG -> 0.55; case CREEPER -> 1.7; case GLOW_SQUID -> 0.8;
                 case WANDERING_TRADER -> 1.95; case ELDER_GUARDIAN -> 1.9975;
                 case ROT_WALKER -> 2.0;
+                case SAMOVARUS -> 2.9;   // высота из кости hitbox блюпринта
                 case ENDER_DRAGON -> 2.6;
                 default -> 1.0;
             };
@@ -1133,6 +1150,17 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         try {
             Entity mob = spawnLoc.getWorld().spawnEntity(spawnLoc, selectedMob.entityType);
             setupMob(mob, selectedMob);
+            String blueprint = selectedMob.modelEngineBlueprint();
+            if (blueprint != null && ModelEngineHook.attach(mob, blueprint)) {
+                // spawn — это падение сверху с приседанием на удар, после него
+                // уходим в walk. Моб всё время едет по прямой, так что walk
+                // просто крутится в цикле и переключать его больше не нужно.
+                ModelEngineHook.playForced(mob, "spawn");
+                final Entity meMob = mob;
+                Bukkit.getScheduler().runTaskLater(this, () -> {
+                    if (meMob.isValid() && !meMob.isDead()) ModelEngineHook.play(meMob, "walk");
+                }, 30L);
+            }
             if (selectedMob == MobData.ENDER_DRAGON) {
                 // Ставим разворот в тот же тик, что и спавн: клиент получит его сразу
                 // в пакете добавления сущности, дальше он поддерживается в moveDragonRig.
@@ -1630,6 +1658,14 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 Mutation base = mobMutations.getOrDefault(finalMob, Mutation.NONE);
                 tickMutationParticles(finalMob, base, tick);
                 for (Mutation extra : getExtraMutations(finalMob)) tickMutationParticles(finalMob, extra, tick);
+                // Раз в 12 секунд самовар вскипает: труба трясётся, крышка прыгает.
+                // Дальше возвращаем walk — boil одноразовая, сама в цикл не уйдёт.
+                if (ModelEngineHook.hasModel(finalMob) && tick % 240L == 120L) {
+                    ModelEngineHook.playForced(finalMob, "boil");
+                    Bukkit.getScheduler().runTaskLater(BrainrotSpawner.this, () -> {
+                        if (finalMob.isValid() && !finalMob.isDead()) ModelEngineHook.play(finalMob, "walk");
+                    }, 36L);
+                }
                 Vector dirVec = getDirectionVector(direction);
                 double baseY = spawnLoc.getY();
                 traveledDistance += speed;
@@ -1747,6 +1783,9 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             Entity hitbox = spongeHitboxMap.remove(mob);
             if (hitbox != null && hitbox.isValid()) hitbox.remove();
             removeDragonCarrier(mob);
+            // Модель ME снимаем до всех ранних return'ов ниже: иначе на сервере
+            // останется висеть рига без хозяина.
+            ModelEngineHook.detach(mob);
             removeNameTags(mob);
             mobBuyers.remove(mob);
             deliveryDestinations.remove(mob);
