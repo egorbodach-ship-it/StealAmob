@@ -145,6 +145,12 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private float dragonYawOffset = -90.0f;
     // Инверсия знака yaw (config: dragon.yaw-invert). Нужна, потому что клиент рисует дракона зеркально.
     private boolean dragonYawInvert = false;
+    // Разворот моделей ModelEngine относительно направления конвейера
+    // (config: modelengine.yaw-offset). Правим здесь, а не в геометрии блюпринта:
+    // геометрия лежит в item-моделях внутри ресурспака, то есть на клиенте, и её
+    // правка заставляет всех игроков заново качать пак, который майнкрафт вдобавок
+    // кэширует по SHA-1. Поворот же подложки ME отрабатывает сам.
+    private float meYawOffset = 180.0f;
 
     private final Map<Entity, Entity> rotWalkerHitboxMap = new HashMap<>();
     private final Map<Entity, BukkitRunnable> rotWalkerAnimTasks = new HashMap<>();
@@ -977,6 +983,11 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         }
         dragonYawOffset = (float) cfg.getDouble("dragon.yaw-offset", -90);
         dragonYawInvert = cfg.getBoolean("dragon.yaw-invert", false);
+        if (!cfg.contains("modelengine.yaw-offset")) {
+            cfg.set("modelengine.yaw-offset", 180);
+            saveConfig();
+        }
+        meYawOffset = (float) cfg.getDouble("modelengine.yaw-offset", 180);
         if (cfg.contains("spawners")) {
             for (String id : cfg.getConfigurationSection("spawners").getKeys(false)) {
                 String path = "spawners." + id + ".";
@@ -1686,6 +1697,13 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 double newY = baseY;
                 if (isFlightMob(mobData)) newY = calculateFlightHeight(mobData, baseY);
                 float yaw = getYawFromDirection(direction);
+                // Модель ModelEngine рисуется по yaw подложки, поэтому разворот
+                // блюпринта делаем здесь, а не в геометрии: сама сущность невидима,
+                // её «лицо» больше ни на что не влияет, а хитбокс в майнкрафте
+                // осесимметричный и от yaw не зависит — клики не поедут.
+                if (mobData.modelEngineBlueprint() != null && meYawOffset != 0.0f) {
+                    yaw = Location.normalizeYaw(yaw + meYawOffset);
+                }
                 Location targetLoc = new Location(initialLoc.getWorld(), newX, newY, newZ, yaw, 0);
                 if (mobData == MobData.ROT_WALKER) {
                     String uniq = getRotWalkerUniqTag(finalMob);
@@ -2361,6 +2379,8 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 s.sendMessage("§6/brainrotspawn dragondebug §7— что сейчас с драконами");
                 s.sendMessage("§6/brainrotspawn megdebug §7— что с моделями ModelEngine");
                 s.sendMessage("§6/brainrotspawn meganim <анимация> §7— проиграть анимацию вживую");
+                s.sendMessage("§6/brainrotspawn samoyaw <градусы> §7— разворот моделей ME (сейчас "
+                        + (int) meYawOffset + "°)");
                 return true;
             }
             if (a[0].equalsIgnoreCase("dragoninvert")) {
@@ -2393,6 +2413,22 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 if (found == 0) s.sendMessage("§7Живых драконов спавнера нет.");
                 return true;
             }
+            if (a[0].equalsIgnoreCase("samoyaw")) {
+                if (a.length < 2) {
+                    s.sendMessage("§eРазворот моделей ModelEngine: §f" + (int) meYawOffset + "°");
+                    s.sendMessage("§7Применяется к живым мобам в тот же тик, пак качать не надо.");
+                    s.sendMessage("§7Пример: §f/brainrotspawn samoyaw 180");
+                    return true;
+                }
+                float val;
+                try { val = Float.parseFloat(a[1]); }
+                catch (NumberFormatException ex) { s.sendMessage("§cНужно число градусов."); return true; }
+                meYawOffset = val;
+                getConfig().set("modelengine.yaw-offset", (double) val);
+                saveConfig();
+                s.sendMessage("§aРазворот моделей ME: §f" + (int) val + "° §7(применится в течение тика)");
+                return true;
+            }
             if (a[0].equalsIgnoreCase("megdebug")) {
                 // Вики ModelEngine недоступна, поэтому единственный надёжный
                 // источник правды о сигнатурах API — живой сервер. Команда
@@ -2403,7 +2439,9 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                     Entity mob = entry.getKey();
                     if (entry.getValue() != MobData.SAMOVARUS || mob == null || !mob.isValid()) continue;
                     found++;
-                    s.sendMessage("§6[ME] §7Самоварус #" + found);
+                    s.sendMessage("§6[ME] §7Самоварус #" + found
+                            + " yaw=§f" + String.format(Locale.US, "%.1f", mob.getLocation().getYaw())
+                            + " §7(смещение §f" + (int) meYawOffset + "°§7)");
                     for (String line : ModelEngineHook.describe(mob)) s.sendMessage("§7  " + line);
                 }
                 if (found == 0) {
