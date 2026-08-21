@@ -181,6 +181,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private final List<String> roadsLaneIds = new ArrayList<>();
     private int roadsGeneration = 0;
     private boolean roadsBusy = false;
+    private World roadsPendingTeardown;
     private BukkitTask roadsFloorTask;
 
     // Конфиг ивентов
@@ -275,8 +276,10 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             for (Player p : Bukkit.getOnlinePlayers()) startPlayerLoop(p);
         }
         startAutoScheduler();
+        // Если сервер упал с открытыми «3 Тропами» — вернуть схему и дёрн.
+        restoreRoadsAfterCrash();
         getLogger().info("BrainrotEvents включён. Трек: " + soundKey
-                + ", ивенты: Плохая Погода / Метеоритный Дождь / Крипер Пати");
+                + ", ивенты: Плохая Погода / Метеоритный Дождь / Крипер Пати / 3 Тропы");
     }
 
     @Override
@@ -586,9 +589,28 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (feedback != null) feedback.sendMessage("§cИвент «Крипер Пати» отключён в конфиге.");
             return false;
         }
+        if (type == EventType.THREE_ROADS) {
+            if (!roadsEnabled) {
+                if (feedback != null) feedback.sendMessage("§cИвент «3 Тропы» отключён в конфиге.");
+                return false;
+            }
+            // Схемы вставляются асинхронно, пол — порциями по тикам. Пока стройка или
+            // разбор не закончились, второй запуск затоптал бы сам себя.
+            if (roadsBusy) {
+                if (feedback != null) feedback.sendMessage("§eКарта «3 Троп» ещё перестраивается, подожди пару секунд.");
+                return false;
+            }
+        }
         if (isActive(type)) {
-            // Тот же ивент запускают повторно — перезапускаем именно его, остальные не трогаем.
-            stopEvent(type, true);
+            if (type == EventType.THREE_ROADS) {
+                // Карта уже перестроена. Разбирать её и строить заново — это две лишние
+                // вставки схемы подряд, поэтому просто заменяем сессию: тропы и бетон
+                // остаются на месте, у ивента обновляется только таймер и босс-бар.
+                dropSessionKeepingMap(type);
+            } else {
+                // Тот же ивент запускают повторно — перезапускаем именно его, остальные не трогаем.
+                stopEvent(type, true);
+            }
         }
 
         World world = resolveWorld(feedback);
@@ -601,6 +623,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 case BAD_WEATHER -> weatherDuration;
                 case METEOR_SHOWER -> meteorDuration;
                 case CREEPER_PARTY -> creeperDuration;
+                case THREE_ROADS -> roadsDuration;
             };
         }
 
@@ -619,6 +642,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 case BAD_WEATHER -> Sound.ENTITY_LIGHTNING_BOLT_THUNDER;
                 case METEOR_SHOWER -> Sound.ENTITY_GENERIC_EXPLODE;
                 case CREEPER_PARTY -> Sound.ENTITY_CREEPER_PRIMED;
+                case THREE_ROADS -> Sound.ENTITY_PLAYER_LEVELUP;
             }, 0.7f, 0.8f);
         }
 
@@ -628,6 +652,11 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             case BAD_WEATHER -> startBadWeather(session, seconds);
             case METEOR_SHOWER -> startMeteorShower(session);
             case CREEPER_PARTY -> startCreeperParty(session);
+            case THREE_ROADS -> {
+                // Дорожки уже стоят — значит карта открыта и ивент просто продлили.
+                if (roadsLaneIds.isEmpty()) startThreeRoads(session);
+                else getLogger().info("3 Тропы: карта уже открыта, продлеваю ивент до " + seconds + "с.");
+            }
         }
 
         getLogger().info("Ивент " + type.title + " запущен на " + seconds + "с в мире " + world.getName()
@@ -637,6 +666,20 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
 
     private boolean isActive(EventType type) {
         return sessions.containsKey(type);
+    }
+
+    /**
+     * Снимает сессию ивента, но НЕ разбирает то, что он построил в мире.
+     * Нужно только «3 Тропам» при повторном запуске: карта уже открыта.
+     */
+    private void dropSessionKeepingMap(EventType type) {
+        EventSession s = sessions.remove(type);
+        if (s == null) return;
+        for (BukkitTask t : s.tasks) {
+            try { if (t != null) t.cancel(); } catch (Throwable ignored) {}
+        }
+        s.tasks.clear();
+        try { s.bar.removeAll(); s.bar.setVisible(false); } catch (Throwable ignored) {}
     }
 
     /** Мир любого идущего ивента — для статуса и подсказок. */
@@ -726,6 +769,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 activeMeteors.clear();
             }
             case CREEPER_PARTY -> clearCreeperParty();
+            case THREE_ROADS -> teardownThreeRoads(s.world);
         }
 
         if (sessions.isEmpty() && barTask != null) {
@@ -753,6 +797,11 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 if (weatherEnabled && !isActive(EventType.BAD_WEATHER)) pool.add(EventType.BAD_WEATHER);
                 if (meteorEnabled && !isActive(EventType.METEOR_SHOWER)) pool.add(EventType.METEOR_SHOWER);
                 if (creeperEnabled && !isActive(EventType.CREEPER_PARTY)) pool.add(EventType.CREEPER_PARTY);
+                // «3 Тропы» по умолчанию вне ротации: ивент перестраивает карту,
+                // поэтому запускается руками. Включается events.three-roads.include-in-auto.
+                if (roadsEnabled && roadsIncludeInAuto && !roadsBusy && !isActive(EventType.THREE_ROADS)) {
+                    pool.add(EventType.THREE_ROADS);
+                }
                 if (pool.isEmpty()) return;
                 startEvent(pool.get(random.nextInt(pool.size())), 0, null);
             }
@@ -1182,6 +1231,342 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     }
 
     // =========================================================
+    // ИВЕНТ 4: 3 ТРОПЫ (схема с проходами + бетон + две временные дорожки)
+    // =========================================================
+    /**
+     * Порядок стройки: сначала стена спавна меняется на схему с тремя проходами,
+     * потом под двумя новыми тропами кладётся бетон, и только после этого
+     * поднимаются дорожки конвейера — иначе моб успел бы выехать в закрытую стену.
+     * Разбор идёт в обратном порядке: дорожки снимаются мгновенно, затем
+     * возвращается исходная схема и дёрн.
+     */
+    private void startThreeRoads(EventSession session) {
+        final World world = session.world;
+        final int gen = ++roadsGeneration;
+        roadsBusy = true;
+        markRoadsState(true, world.getName());
+        getLogger().info("3 Тропы: открываю проходы (схема " + roadsSchemOpen + ").");
+        pasteRoadsSchematic(world, roadsSchemOpen, () -> {
+            if (roadsStale(gen)) { roadsBusy = false; runPendingRoadsTeardown(); return; }
+            fillRoadsFloor(world, roadsFloorMaterial, () -> {
+                if (roadsStale(gen)) { roadsBusy = false; runPendingRoadsTeardown(); return; }
+                int lanes = openRoadsLanes(world);
+                roadsBusy = false;
+                if (roadsPendingTeardown != null) { runPendingRoadsTeardown(); return; }
+                for (Player p : world.getPlayers()) {
+                    p.sendMessage("§6§l✦ Открылись 3 тропы! §7Мобы теперь едут по трём дорожкам.");
+                    try { p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 0.8f, 1.6f); }
+                    catch (Throwable ignored) {}
+                }
+                getLogger().info("3 Тропы: стройка закончена, временных дорожек — " + lanes + ".");
+            });
+        });
+    }
+
+    /** Стройку обогнали: ивент уже сняли или перезапустили. */
+    private boolean roadsStale(int gen) {
+        return gen != roadsGeneration || roadsPendingTeardown != null || !isActive(EventType.THREE_ROADS);
+    }
+
+    private void teardownThreeRoads(World world) {
+        closeRoadsLanes();
+        if (roadsBusy) {
+            // Стройка ещё в воздухе. Отменить асинхронную вставку схемы нельзя,
+            // поэтому разбор запомним и выполним сразу, как она закончится.
+            roadsPendingTeardown = (world != null ? world : anyEventWorld());
+            getLogger().info("3 Тропы: разбор отложен до конца текущей перестройки.");
+            return;
+        }
+        restoreRoadsMap(world);
+    }
+
+    private void runPendingRoadsTeardown() {
+        if (roadsPendingTeardown == null || roadsBusy) return;
+        World w = roadsPendingTeardown;
+        roadsPendingTeardown = null;
+        restoreRoadsMap(w);
+    }
+
+    /** Возвращает исходную схему стены и дёрн под тропами. */
+    private void restoreRoadsMap(World world) {
+        if (world == null) {
+            getLogger().warning("3 Тропы: мир не найден, карту вернуть не могу. Флаг снимаю, проверь спавн вручную.");
+            markRoadsState(false, "");
+            return;
+        }
+        final int gen = ++roadsGeneration;
+        roadsBusy = true;
+        getLogger().info("3 Тропы: возвращаю схему " + roadsSchemClose + " и " + roadsRestoreMaterial + ".");
+        pasteRoadsSchematic(world, roadsSchemClose, () -> fillRoadsFloor(world, roadsRestoreMaterial, () -> {
+            roadsBusy = false;
+            if (gen == roadsGeneration) markRoadsState(false, "");
+            getLogger().info("3 Тропы: карта возвращена в исходное состояние.");
+            runPendingRoadsTeardown();
+        }));
+    }
+
+    /**
+     * Флаг «карта сейчас перестроена». Пишется на диск сразу: если сервер упадёт
+     * с открытыми тропами, при следующем старте мы увидим флаг и вернём всё назад,
+     * иначе бетон и дырявая стена остались бы навсегда.
+     */
+    private void markRoadsState(boolean active, String worldName) {
+        try {
+            getConfig().set("events.three-roads.state.active", active);
+            getConfig().set("events.three-roads.state.world", worldName == null ? "" : worldName);
+            saveConfig();
+        } catch (Throwable t) {
+            getLogger().warning("3 Тропы: не удалось сохранить состояние: " + t.getMessage());
+        }
+    }
+
+    /** Вызывается на onEnable: если прошлый запуск не закрылся — чиним карту. */
+    private void restoreRoadsAfterCrash() {
+        if (!getConfig().getBoolean("events.three-roads.state.active", false)) return;
+        String wn = getConfig().getString("events.three-roads.state.world", "");
+        getLogger().warning("3 Тропы: прошлый ивент не был закрыт (перезапуск сервера?) — возвращаю карту.");
+        // Ждём, пока прогрузятся мир и WorldEdit.
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            World w = (wn == null || wn.isEmpty()) ? null : Bukkit.getWorld(wn);
+            if (w == null) w = resolveWorld();
+            restoreRoadsMap(w);
+        }, 100L);
+    }
+
+    // ---------- геометрия и блоки ----------
+
+    /** Точка вида «-60 47 73» или «-60,47,73». */
+    private Location parseRoadsPoint(World world, String raw) {
+        if (world == null || raw == null) return null;
+        String[] parts = raw.trim().replace(',', ' ').split("\\s+");
+        if (parts.length < 3) return null;
+        try {
+            double x = Double.parseDouble(parts[0]);
+            double y = Double.parseDouble(parts[1]);
+            double z = Double.parseDouble(parts[2]);
+            // Центр блока: мобы должны ехать по середине тропы, а не по её краю.
+            return new Location(world, Math.floor(x) + 0.5, y, Math.floor(z) + 0.5);
+        } catch (NumberFormatException ex) {
+            getLogger().warning("3 Тропы: не разобрал координату '" + raw + "'.");
+            return null;
+        }
+    }
+
+    private Material roadsMaterial(String name, Material fallback) {
+        if (name != null && !name.trim().isEmpty()) {
+            try {
+                Material m = Material.matchMaterial(name.trim().toUpperCase(Locale.ROOT));
+                if (m != null && m.isBlock()) return m;
+            } catch (Throwable ignored) {}
+            getLogger().warning("3 Тропы: блок '" + name + "' не найден, беру " + fallback + ".");
+        }
+        return fallback;
+    }
+
+    /** Обе полосы пола одним списком координат X/Z (высота одна — roadsFloorY). */
+    private List<int[]> roadsFloorBlocks() {
+        List<int[]> out = new ArrayList<>();
+        int x1 = Math.min(roadsFloorX1, roadsFloorX2);
+        int x2 = Math.max(roadsFloorX1, roadsFloorX2);
+        addFloorStrip(out, x1, x2, roadsStrip1Z1, roadsStrip1Z2);
+        addFloorStrip(out, x1, x2, roadsStrip2Z1, roadsStrip2Z2);
+        return out;
+    }
+
+    private void addFloorStrip(List<int[]> out, int x1, int x2, int za, int zb) {
+        int z1 = Math.min(za, zb);
+        int z2 = Math.max(za, zb);
+        for (int x = x1; x <= x2; x++) {
+            for (int z = z1; z <= z2; z++) out.add(new int[]{x, z});
+        }
+    }
+
+    /** Кладёт пол порциями по тикам, чтобы не собрать лаг-спайк на ~800 блоков. */
+    private void fillRoadsFloor(World world, String materialName, Runnable afterMain) {
+        if (roadsFloorTask != null) {
+            try { roadsFloorTask.cancel(); } catch (Throwable ignored) {}
+            roadsFloorTask = null;
+        }
+        if (world == null) {
+            if (afterMain != null) afterMain.run();
+            return;
+        }
+        final Material mat = roadsMaterial(materialName, Material.GRASS_BLOCK);
+        final List<int[]> blocks = roadsFloorBlocks();
+        final int[] idx = {0};
+        try {
+            roadsFloorTask = new BukkitRunnable() {
+                @Override public void run() {
+                    int done = 0;
+                    while (idx[0] < blocks.size() && done < roadsBlocksPerTick) {
+                        int[] b = blocks.get(idx[0]++);
+                        done++;
+                        try {
+                            Block block = world.getBlockAt(b[0], roadsFloorY, b[1]);
+                            if (block.getType() != mat) block.setType(mat, false);
+                        } catch (Throwable ignored) {}
+                    }
+                    if (idx[0] >= blocks.size()) {
+                        try { cancel(); } catch (Throwable ignored) {}
+                        roadsFloorTask = null;
+                        getLogger().info("3 Тропы: пол выложен (" + blocks.size() + " блоков " + mat + ").");
+                        if (afterMain != null) afterMain.run();
+                    }
+                }
+            }.runTaskTimer(this, 1L, 1L);
+        } catch (Throwable t) {
+            getLogger().warning("3 Тропы: не смог запустить укладку пола: " + t.getMessage());
+            roadsFloorTask = null;
+        }
+    }
+
+    /**
+     * Вставка схемы стены. Повторяет проверенный путь из BrainrotBases:
+     * origin сбрасывается в минимальный угол, чтобы вставка легла ровно по pos1/pos2,
+     * а ignoreAirBlocks(false) нужен, чтобы проходы в схеме действительно
+     * вырезали блоки, а не «просвечивали» старую стену.
+     */
+    private void pasteRoadsSchematic(World world, String schemName, Runnable afterMain) {
+        if (world == null || schemName == null || schemName.trim().isEmpty()) {
+            if (afterMain != null) afterMain.run();
+            return;
+        }
+        Location l1 = parseRoadsPoint(world, roadsWallPos1);
+        Location l2 = parseRoadsPoint(world, roadsWallPos2);
+        if (l1 == null || l2 == null) {
+            getLogger().warning("3 Тропы: не заданы координаты стены (events.three-roads.wall.pos1/pos2).");
+            if (afterMain != null) afterMain.run();
+            return;
+        }
+        final int minX = Math.min(l1.getBlockX(), l2.getBlockX());
+        final int minY = Math.min(l1.getBlockY(), l2.getBlockY());
+        final int minZ = Math.min(l1.getBlockZ(), l2.getBlockZ());
+        final File file = resolveSchematicFile(schemName);
+        if (file == null || !file.exists()) {
+            getLogger().severe("3 Тропы: схема '" + schemName + "' не найдена. Положи её в plugins/BrainrotEvents/schematics/"
+                    + " или в папку схем WorldEdit/FAWE.");
+            if (afterMain != null) afterMain.run();
+            return;
+        }
+        final Runnable done = afterMain;
+        try {
+            Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                try {
+                    ClipboardFormat format = ClipboardFormats.findByFile(file);
+                    if (format == null) {
+                        getLogger().warning("3 Тропы: неизвестный формат схемы " + file.getName());
+                    } else {
+                        Clipboard clipboard;
+                        try (java.io.FileInputStream fis = new java.io.FileInputStream(file);
+                             ClipboardReader reader = format.getReader(fis)) {
+                            clipboard = reader.read();
+                        }
+                        clipboard.setOrigin(clipboard.getRegion().getMinimumPoint());
+                        com.sk89q.worldedit.world.World weWorld = BukkitAdapter.adapt(world);
+                        try (EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder().world(weWorld).build()) {
+                            Operation operation = new ClipboardHolder(clipboard)
+                                    .createPaste(editSession)
+                                    .to(BlockVector3.at(minX, minY, minZ))
+                                    .ignoreAirBlocks(false)
+                                    .build();
+                            Operations.complete(operation);
+                        }
+                        getLogger().info("3 Тропы: схема '" + schemName + "' вставлена в "
+                                + minX + "," + minY + "," + minZ);
+                    }
+                } catch (Throwable t) {
+                    getLogger().severe("3 Тропы: ошибка вставки схемы '" + schemName + "': " + t);
+                }
+                if (done != null) {
+                    try { Bukkit.getScheduler().runTask(this, done); }
+                    catch (Throwable ignored) {}
+                }
+            });
+        } catch (Throwable t) {
+            getLogger().warning("3 Тропы: не смог запустить вставку схемы: " + t.getMessage());
+            if (done != null) done.run();
+        }
+    }
+
+    private File resolveSchematicFile(String name) {
+        if (name == null || name.isEmpty()) return null;
+        String fn = (name.endsWith(".schem") || name.endsWith(".schematic")) ? name : name + ".schem";
+        File local = new File(new File(getDataFolder(), "schematics"), fn);
+        if (local.exists()) return local;
+        File parent = getDataFolder().getParentFile();
+        if (parent != null) {
+            File fawe = new File(parent, "FastAsyncWorldEdit/schematics/" + fn);
+            if (fawe.exists()) return fawe;
+            File we = new File(parent, "WorldEdit/schematics/" + fn);
+            if (we.exists()) return we;
+        }
+        return local;
+    }
+
+    // ---------- временные дорожки конвейера ----------
+
+    /**
+     * Поднимает две дорожки на время ивента. Скорость и кулдаун по умолчанию
+     * наследуются у постоянной дорожки спавнера, чтобы новые тропы шли в том же
+     * темпе. Гарантированных легендарного и мифика у временных дорожек нет —
+     * это сделано на стороне спавнера.
+     */
+    private int openRoadsLanes(World world) {
+        closeRoadsLanes();
+        double speed = roadsLaneSpeed;
+        long cooldown = roadsLaneCooldown;
+        if (speed <= 0 || cooldown <= 0) {
+            for (String id : getPermanentSpawnerIds()) {
+                if (speed <= 0) {
+                    double s = getSpawnerSpeed(id);
+                    if (s > 0) speed = s;
+                }
+                if (cooldown <= 0) {
+                    long c = getSpawnerCooldownTicks(id);
+                    if (c > 0) cooldown = c;
+                }
+                if (speed > 0 && cooldown > 0) break;
+            }
+        }
+        if (speed <= 0) speed = 0.2;
+        if (cooldown <= 0) cooldown = 600L;
+
+        int opened = 0;
+        if (addRoadsLane(ROADS_LANE1_ID, world, roadsLane1Spawn, roadsLane1End, speed, cooldown)) opened++;
+        if (addRoadsLane(ROADS_LANE2_ID, world, roadsLane2Spawn, roadsLane2End, speed, cooldown)) opened++;
+        if (opened == 0) {
+            getLogger().warning("3 Тропы: ни одна временная дорожка не поднялась — спавнер не отвечает?");
+        }
+        // Область метеоритов считается по точкам конвейеров и кэшируется — сбрасываем.
+        regionBounds = null;
+        return opened;
+    }
+
+    private boolean addRoadsLane(String id, World world, String spawnRaw, String endRaw, double speed, long cooldown) {
+        Location spawn = parseRoadsPoint(world, spawnRaw);
+        Location end = parseRoadsPoint(world, endRaw);
+        if (spawn == null || end == null) {
+            getLogger().warning("3 Тропы: у дорожки " + id + " битые координаты, пропускаю.");
+            return false;
+        }
+        if (!addEventConveyor(id, spawn, end, speed, "", cooldown)) return false;
+        roadsLaneIds.add(id);
+        return true;
+    }
+
+    private void closeRoadsLanes() {
+        if (roadsLaneIds.isEmpty()) return;
+        int removed = 0;
+        for (String id : new ArrayList<>(roadsLaneIds)) {
+            int cleaned = removeEventConveyor(id);
+            if (cleaned >= 0) removed += cleaned;
+        }
+        roadsLaneIds.clear();
+        regionBounds = null;
+        getLogger().info("3 Тропы: временные дорожки сняты, убрано некупленных мобов — " + removed + ".");
+    }
+
+    // =========================================================
     // РЕГИОН (WorldGuard -> конвейеры -> ручной бокс)
     // =========================================================
     private double[] getRegionBounds(World world) {
@@ -1338,6 +1723,73 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         } catch (Throwable t) {
             return false;
         }
+    }
+
+    /** Постоянные дорожки спавнера — у них ивент занимает скорость и кулдаун. */
+    @SuppressWarnings("unchecked")
+    private List<String> getPermanentSpawnerIds() {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return Collections.emptyList();
+        try {
+            Object res = spawner.getClass().getMethod("getPermanentSpawnerIds").invoke(spawner);
+            if (res instanceof List) return (List<String>) res;
+        } catch (Throwable ignored) {}
+        return Collections.emptyList();
+    }
+
+    private double getSpawnerSpeed(String id) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return 0.0;
+        try {
+            Object res = spawner.getClass().getMethod("getSpawnerSpeed", String.class).invoke(spawner, id);
+            if (res instanceof Number n) return n.doubleValue();
+        } catch (Throwable ignored) {}
+        return 0.0;
+    }
+
+    private long getSpawnerCooldownTicks(String id) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return 0L;
+        try {
+            Object res = spawner.getClass().getMethod("getSpawnerCooldownTicks", String.class).invoke(spawner, id);
+            if (res instanceof Number n) return n.longValue();
+        } catch (Throwable ignored) {}
+        return 0L;
+    }
+
+    /** Заводит временную дорожку в спавнере. Пустое направление — спавнер посчитает сам. */
+    private boolean addEventConveyor(String id, Location spawn, Location despawn,
+                                     double speed, String direction, long cooldownTicks) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) {
+            getLogger().warning("3 Тропы: BrainrotSpawner не подключён, дорожку " + id + " не поднять.");
+            return false;
+        }
+        try {
+            Object res = spawner.getClass().getMethod("addEventConveyor",
+                            String.class, Location.class, Location.class, double.class, String.class, long.class)
+                    .invoke(spawner, id, spawn, despawn, speed, direction, cooldownTicks);
+            return res instanceof Boolean && (Boolean) res;
+        } catch (NoSuchMethodException ex) {
+            getLogger().warning("3 Тропы: в установленном BrainrotSpawner нет addEventConveyor — обнови спавнер.");
+            return false;
+        } catch (Throwable t) {
+            getLogger().warning("3 Тропы: дорожка " + id + " не поднялась: " + t);
+            return false;
+        }
+    }
+
+    /** Снимает временную дорожку. Возвращает число убранных мобов или -1. */
+    private int removeEventConveyor(String id) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return -1;
+        try {
+            Object res = spawner.getClass().getMethod("removeEventConveyor", String.class).invoke(spawner, id);
+            if (res instanceof Number n) return n.intValue();
+        } catch (Throwable t) {
+            getLogger().warning("3 Тропы: дорожку " + id + " снять не вышло: " + t);
+        }
+        return -1;
     }
 
     // =========================================================
@@ -1509,15 +1961,15 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 return true;
             }
             if (args.length == 0) {
-                sender.sendMessage("§6/" + label + " start <badweather|meteor|creeper> [секунды] §7— можно запускать несколько сразу");
-                sender.sendMessage("§6/" + label + " stop [badweather|meteor|creeper] §7— остановить один или все");
+                sender.sendMessage("§6/" + label + " start <badweather|meteor|creeper|3road> [секунды] §7— можно запускать несколько сразу");
+                sender.sendMessage("§6/" + label + " stop [badweather|meteor|creeper|3road] §7— остановить один или все");
                 sender.sendMessage("§6/" + label + " status §7— что сейчас идёт");
                 sender.sendMessage("§6/" + label + " reload §7— перечитать конфиг");
                 return true;
             }
             switch (args[0].toLowerCase(Locale.ROOT)) {
                 case "start" -> {
-                    if (args.length < 2) { sender.sendMessage("§cУкажи ивент: badweather, meteor или creeper."); return true; }
+                    if (args.length < 2) { sender.sendMessage("§cУкажи ивент: badweather, meteor, creeper или 3road."); return true; }
                     EventType type = EventType.byKey(args[1]);
                     if (type == null) { sender.sendMessage("§cНеизвестный ивент: " + args[1]); return true; }
                     int seconds = 0;
@@ -1569,6 +2021,11 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                                     + (int) Math.round(creeperChargeChance * 100) + "%"
                                     + " §7| шанс на игрока: §f" + (int) Math.round(creeperPlayerChance * 100) + "%");
                         }
+                        if (s.type == EventType.THREE_ROADS) {
+                            sender.sendMessage("§7  временных дорожек: §f" + roadsLaneIds.size()
+                                    + " §7| перестройка: " + (roadsBusy ? "§eидёт" : "§aзакончена")
+                                    + " §7| схемы: §f" + roadsSchemOpen + " §7/ §f" + roadsSchemClose);
+                        }
                     }
                 }
                 case "reload" -> {
@@ -1591,7 +2048,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 return filter(List.of("start", "stop", "status", "reload"), args[0]);
             }
             if (args.length == 2 && (args[0].equalsIgnoreCase("start") || args[0].equalsIgnoreCase("stop"))) {
-                return filter(List.of("badweather", "meteor", "creeper"), args[1]);
+                return filter(List.of("badweather", "meteor", "creeper", "3road"), args[1]);
             }
             if (args.length == 3 && args[0].equalsIgnoreCase("start")) {
                 return filter(List.of("60", "120", "180", "300"), args[2]);
