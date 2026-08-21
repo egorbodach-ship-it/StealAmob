@@ -1155,11 +1155,14 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 // spawn — это падение сверху с приседанием на удар, после него
                 // уходим в walk. Моб всё время едет по прямой, так что walk
                 // просто крутится в цикле и переключать его больше не нужно.
+                // Возврат в walk строго через loop() (force=true): пока spawn не
+                // отпустил кости, мягкий запрос ME игнорирует, и самовар доезжает
+                // до базы застывшим столбом.
                 ModelEngineHook.playForced(mob, "spawn");
                 final Entity meMob = mob;
                 Bukkit.getScheduler().runTaskLater(this, () -> {
-                    if (meMob.isValid() && !meMob.isDead()) ModelEngineHook.play(meMob, "walk");
-                }, 30L);
+                    if (meMob.isValid() && !meMob.isDead()) ModelEngineHook.loop(meMob, "walk");
+                }, 32L);
             }
             if (selectedMob == MobData.ENDER_DRAGON) {
                 // Ставим разворот в тот же тик, что и спавн: клиент получит его сразу
@@ -1663,8 +1666,17 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 if (ModelEngineHook.hasModel(finalMob) && tick % 240L == 120L) {
                     ModelEngineHook.playForced(finalMob, "boil");
                     Bukkit.getScheduler().runTaskLater(BrainrotSpawner.this, () -> {
-                        if (finalMob.isValid() && !finalMob.isDead()) ModelEngineHook.play(finalMob, "walk");
+                        if (finalMob.isValid() && !finalMob.isDead()) ModelEngineHook.loop(finalMob, "walk");
                     }, 36L);
+                }
+                // Страховка от «моб приехал застывшим»: раз в 4 секунды мягко
+                // просим walk. force не выставлен, поэтому уже идущий цикл ME не
+                // перезапустит и походка не задёргается, а вот если walk по любой
+                // причине оборвался — он вернётся сам. Окно 110..170 пропускаем,
+                // чтобы не наступать на boil.
+                if (ModelEngineHook.hasModel(finalMob) && tick % 80L == 40L) {
+                    long phase = tick % 240L;
+                    if (phase < 110L || phase > 170L) ModelEngineHook.keepAlive(finalMob, "walk");
                 }
                 Vector dirVec = getDirectionVector(direction);
                 double baseY = spawnLoc.getY();
@@ -2347,6 +2359,8 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 s.sendMessage("§6/brainrotspawn dragoninvert §7— зеркальный поворот (сейчас "
                         + (dragonYawInvert ? "вкл" : "выкл") + ")");
                 s.sendMessage("§6/brainrotspawn dragondebug §7— что сейчас с драконами");
+                s.sendMessage("§6/brainrotspawn megdebug §7— что с моделями ModelEngine");
+                s.sendMessage("§6/brainrotspawn meganim <анимация> §7— проиграть анимацию вживую");
                 return true;
             }
             if (a[0].equalsIgnoreCase("dragoninvert")) {
@@ -2377,6 +2391,44 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                             + " §7ИИ=§f" + (mob instanceof LivingEntity le && le.hasAI()));
                 }
                 if (found == 0) s.sendMessage("§7Живых драконов спавнера нет.");
+                return true;
+            }
+            if (a[0].equalsIgnoreCase("megdebug")) {
+                // Вики ModelEngine недоступна, поэтому единственный надёжный
+                // источник правды о сигнатурах API — живой сервер. Команда
+                // печатает, что именно нашла рефлексия и какие имена анимаций
+                // ME вычитал из блюпринта.
+                int found = 0;
+                for (Map.Entry<Entity, MobData> entry : new HashMap<>(mobDataMap).entrySet()) {
+                    Entity mob = entry.getKey();
+                    if (entry.getValue() != MobData.SAMOVARUS || mob == null || !mob.isValid()) continue;
+                    found++;
+                    s.sendMessage("§6[ME] §7Самоварус #" + found);
+                    for (String line : ModelEngineHook.describe(mob)) s.sendMessage("§7  " + line);
+                }
+                if (found == 0) {
+                    s.sendMessage("§7Живых Самоварусов нет. Заспавни: §f/brainrotspawn samovarus force");
+                    for (String line : ModelEngineHook.describe(null)) s.sendMessage("§7  " + line);
+                }
+                return true;
+            }
+            if (a[0].equalsIgnoreCase("meganim")) {
+                if (a.length < 2) {
+                    s.sendMessage("§eИмена: §fidle walk boil pour spawn hurt death");
+                    s.sendMessage("§7Пример: §f/brainrotspawn meganim walk");
+                    return true;
+                }
+                String anim = a[1].toLowerCase(Locale.ROOT);
+                int found = 0;
+                for (Map.Entry<Entity, MobData> entry : new HashMap<>(mobDataMap).entrySet()) {
+                    Entity mob = entry.getKey();
+                    if (mob == null || !mob.isValid() || !ModelEngineHook.hasModel(mob)) continue;
+                    found++;
+                    boolean ok = ModelEngineHook.playForced(mob, anim);
+                    s.sendMessage((ok ? "§a✔ " : "§c✖ ") + "§7#" + found + " " + entry.getValue().name()
+                            + " → §f" + anim + (ok ? "" : " §7(подробности в консоли)"));
+                }
+                if (found == 0) s.sendMessage("§7Мобов с моделью ME нет.");
                 return true;
             }
             if (a[0].equalsIgnoreCase("dragonyaw")) {

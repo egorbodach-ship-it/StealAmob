@@ -42,7 +42,18 @@ public final class ModelEngineHook {
     /** UUID сущности → ModeledEntity */
     private static final Map<UUID, Object> RIGS = new ConcurrentHashMap<>();
 
+    /**
+     * Ключи уже показанных однократных сообщений. Анимации дёргаются из тикающих
+     * задач, поэтому одна и та же жалоба иначе залила бы консоль десятками строк
+     * в секунду. Тут же лежат ключи разово печатаемых сигнатур API.
+     */
+    private static final java.util.Set<String> WARNED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     private ModelEngineHook() {}
+
+    private static void warnOnce(String key, String message) {
+        if (WARNED.add(key)) Bukkit.getLogger().warning(LOG + message);
+    }
 
     // ── доступность ───────────────────────────────────────────────────────
 
@@ -174,6 +185,24 @@ public final class ModelEngineHook {
     }
 
     /**
+     * Вернуться в зацикленную анимацию после одноразовой. Именно force=true:
+     * пока предыдущая once-анимация не отпустила кости, ME мягкий запрос
+     * игнорирует, и моб застывает столбом до конца жизни.
+     */
+    public static boolean loop(Entity mob, String animation) {
+        return play(mob, animation, 0.2, 0.2, 1.0, true);
+    }
+
+    /**
+     * Тихая проверка-подстраховка: если анимация уже идёт, ME вернёт «нет» и мы
+     * молча уходим — это штатный ответ, а не ошибка, ругаться в консоль нельзя.
+     * Если же цикл почему-то оборвался, анимация запустится заново.
+     */
+    public static boolean keepAlive(Entity mob, String animation) {
+        return play(mob, animation, 0.2, 0.2, 1.0, false, true);
+    }
+
+    /**
      * @param lerpIn  секунды плавного входа
      * @param lerpOut секунды плавного выхода
      * @param speed   1.0 — как в блокбенче
@@ -181,26 +210,59 @@ public final class ModelEngineHook {
      */
     public static boolean play(Entity mob, String animation, double lerpIn, double lerpOut,
                                double speed, boolean force) {
+        return play(mob, animation, lerpIn, lerpOut, speed, force, false);
+    }
+
+    private static boolean play(Entity mob, String animation, double lerpIn, double lerpOut,
+                                double speed, boolean force, boolean quiet) {
         if (mob == null || animation == null) return false;
         Object model = MODELS.get(mob.getUniqueId());
-        if (model == null) return false;
+        if (model == null) {
+            if (!quiet) warnOnce("no-model", "анимация \"" + animation + "\": на этой сущности нет нашей "
+                    + "модели — attach не сработал либо моб уже почищен");
+            return false;
+        }
         try {
             Method getHandler = findMethod(model.getClass(), "getAnimationHandler", 0);
-            if (getHandler == null) return false;
+            if (getHandler == null) {
+                warnOnce("no-handler-getter", "у " + model.getClass().getName()
+                        + " нет getAnimationHandler() — API ModelEngine незнакомый, анимаций не будет");
+                return false;
+            }
             Object handler = getHandler.invoke(model);
-            if (handler == null) return false;
+            if (handler == null) {
+                warnOnce("null-handler", "getAnimationHandler() вернул null — анимаций не будет");
+                return false;
+            }
             for (int argc = 5; argc >= 1; argc--) {
                 Method play = findMethod(handler.getClass(), "playAnimation", argc);
                 if (play == null) continue;
                 Object[] args = buildArgs(play.getParameterTypes(), animation,
                         new double[]{lerpIn, lerpOut, speed}, force);
                 if (args == null) continue;
-                play.invoke(handler, args);
+                if (WARNED.add("sig-play-" + argc)) {
+                    Bukkit.getLogger().info(LOG + "playAnimation: " + describeMethod(play)
+                            + ", анимации блюпринта: " + animationNames(model));
+                }
+                Object res = play.invoke(handler, args);
+                // ME возвращает boolean. false означает «не играю»: либо такого
+                // имени нет в блюпринте, либо ровно эта же анимация уже идёт и
+                // force не выставлен. Без проверки мы рапортовали бы успех при
+                // полной тишине на экране — именно так и терялся walk.
+                if (res instanceof Boolean ok && !ok) {
+                    if (!quiet) warnOnce("refused-" + animation, "ME отказался играть \"" + animation
+                            + "\" (force=" + force + "). Чаще всего такой анимации нет в блюпринте: "
+                            + "сверь имена — сейчас ME видит " + animationNames(model));
+                    return false;
+                }
                 return true;
             }
+            warnOnce("no-play-method", "у " + handler.getClass().getName()
+                    + " не нашлось подходящего playAnimation — версия ME не поддерживается");
             return false;
         } catch (Throwable t) {
-            Bukkit.getLogger().warning(LOG + "анимация \"" + animation + "\" не проигралась: " + rootCause(t));
+            warnOnce("throw-" + animation,
+                    "анимация \"" + animation + "\" не проигралась: " + rootCause(t));
             return false;
         }
     }
@@ -221,6 +283,90 @@ public final class ModelEngineHook {
     }
 
     // ── рефлексивная мелочь ───────────────────────────────────────────────
+
+    private static String describeMethod(Method m) {
+        StringBuilder sb = new StringBuilder(m.getDeclaringClass().getSimpleName())
+                .append('.').append(m.getName()).append('(');
+        Class<?>[] t = m.getParameterTypes();
+        for (int i = 0; i < t.length; i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(t[i].getSimpleName());
+        }
+        return sb.append(") → ").append(m.getReturnType().getSimpleName()).toString();
+    }
+
+    /**
+     * Имена анимаций так, как их разобрал сам ME из нашего bbmodel. Самый ценный
+     * диагноз: если тут пусто или нет walk — проблема в блюпринте, а не в коде.
+     * Путь до них между версиями зовётся по-разному, поэтому пробуем варианты.
+     */
+    private static String animationNames(Object model) {
+        try {
+            Object bp = null;
+            for (String getter : new String[]{"getBlueprint", "getBlueprintModel", "getModelBlueprint"}) {
+                Method m = findMethod(model.getClass(), getter, 0);
+                if (m != null) {
+                    bp = m.invoke(model);
+                    if (bp != null) break;
+                }
+            }
+            if (bp == null) return "неизвестно (нет getBlueprint)";
+            Method anims = findMethod(bp.getClass(), "getAnimations", 0);
+            if (anims == null) return "неизвестно (нет getAnimations)";
+            Object value = anims.invoke(bp);
+            if (value instanceof Map<?, ?> map) {
+                if (map.isEmpty()) return "СПИСОК ПУСТ";
+                return String.join(", ", map.keySet().stream().map(String::valueOf).sorted().toList());
+            }
+            return String.valueOf(value);
+        } catch (Throwable t) {
+            return "не удалось прочитать (" + rootCause(t) + ")";
+        }
+    }
+
+    /**
+     * Полный отчёт по одной сущности для команды /brainrotspawn megdebug.
+     * Пишем именно так, подробно: до вики ModelEngine из песочницы не дотянуться,
+     * поэтому единственный источник правды о сигнатурах — живой сервер.
+     */
+    public static java.util.List<String> describe(Entity mob) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        out.add("ModelEngine: " + (isAvailable() ? "подключён" : "НЕТ"));
+        out.add("моделей на учёте: " + MODELS.size() + ", риг: " + RIGS.size());
+        if (mob == null) {
+            out.add("сущность не передана");
+            return out;
+        }
+        Object model = MODELS.get(mob.getUniqueId());
+        if (model == null) {
+            out.add("на этой сущности нашей модели нет");
+            return out;
+        }
+        out.add("ActiveModel: " + model.getClass().getName());
+        out.add("анимации блюпринта: " + animationNames(model));
+        try {
+            Method getHandler = findMethod(model.getClass(), "getAnimationHandler", 0);
+            if (getHandler == null) {
+                out.add("getAnimationHandler(): НЕ НАЙДЕН");
+                return out;
+            }
+            Object handler = getHandler.invoke(model);
+            out.add("AnimationHandler: " + (handler == null ? "null" : handler.getClass().getName()));
+            if (handler == null) return out;
+            int found = 0;
+            for (int argc = 1; argc <= 6; argc++) {
+                Method m = findMethod(handler.getClass(), "playAnimation", argc);
+                if (m == null) continue;
+                found++;
+                Object[] args = buildArgs(m.getParameterTypes(), "walk", new double[]{0.2, 0.2, 1.0}, true);
+                out.add("  " + describeMethod(m) + (args == null ? "  §7(не подставить аргументы)" : "  §aподходит"));
+            }
+            if (found == 0) out.add("  playAnimation НЕ НАЙДЕН НИ В ОДНОЙ ФОРМЕ");
+        } catch (Throwable t) {
+            out.add("ошибка разбора: " + rootCause(t));
+        }
+        return out;
+    }
 
     private static Method findStatic(Class<?> owner, String name, int argc) {
         Method m = findMethod(owner, name, argc);
