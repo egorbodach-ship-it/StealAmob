@@ -3227,6 +3227,16 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         return out;
     }
 
+    /**
+     * Едет ли моб прямо сейчас по конвейеру. Только такого можно поднять лучом НЛО или
+     * пузырём: у купленного и стоящего на базе нет задачи движения, а лифт тикается
+     * именно в ней. Ивенту это нужно ЗАРАНЕЕ — иначе тарелка выбирает целью моба с базы,
+     * startAbduction молча отказывает, и со стороны выглядит как «мутация не даётся».
+     */
+    public boolean isConveyorMob(Entity mob) {
+        return mob != null && movementTasks.containsKey(mob);
+    }
+
     /** Точки конвейеров (спавн/despawn всех валидных спавнеров) — для расчёта области ивентов. */
     public List<Location> getConveyorPoints() {
         List<Location> out = new ArrayList<>();

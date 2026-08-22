@@ -409,6 +409,33 @@ public final class ModelEngineHook {
     private static boolean play(Entity mob, String animation, double lerpIn, double lerpOut,
                                 double speed, boolean force, boolean quiet) {
         if (mob == null || animation == null) return false;
+        if (playRaw(mob, animation, lerpIn, lerpOut, speed, force, true)) return true;
+        // В ME-варианте bbmodel имена анимаций плоские ("walk"), в студийном — с
+        // префиксом ("animation.walk"). Какой файл лежит в blueprints, код знать не
+        // обязан: не сыграло под одним именем — пробуем второе. Раньше на «неправильном»
+        // блюпринте модель просто стояла столбом без единой строчки в логе.
+        String alt = animation.startsWith("animation.")
+                ? animation.substring("animation.".length())
+                : "animation." + animation;
+        if (playRaw(mob, alt, lerpIn, lerpOut, speed, force, true)) {
+            if (WARNED.add("alias-" + animation)) {
+                Bukkit.getLogger().info(LOG + "анимация \"" + animation + "\" в блюпринте названа \""
+                        + alt + "\" — играю её");
+            }
+            return true;
+        }
+        if (!quiet) {
+            Object model = MODELS.get(mob.getUniqueId());
+            warnOnce("refused-" + animation, "ME отказался играть \"" + animation + "\" и \"" + alt
+                    + "\" (force=" + force + "). Анимации, которые видит ME: "
+                    + (model == null ? "модели нет" : animationNames(model)));
+        }
+        return false;
+    }
+
+    private static boolean playRaw(Entity mob, String animation, double lerpIn, double lerpOut,
+                                   double speed, boolean force, boolean quiet) {
+        if (mob == null || animation == null) return false;
         Object model = MODELS.get(mob.getUniqueId());
         if (model == null) {
             // Модель могло унести выгрузкой чанка или /meg reload. Если блюпринт
