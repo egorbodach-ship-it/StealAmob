@@ -29,6 +29,7 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Creeper;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Fireball;
@@ -116,7 +117,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         CREEPER_PARTY("creeper", "Крипер Пати", "§a§l", BarColor.GREEN),
         THREE_ROADS("3road", "3 Тропы", "§6§l", BarColor.YELLOW),
         LUCKY_2X("2x", "2x Удача", "§d§l", BarColor.PURPLE),
-        GUM_MACHINE("gum", "Бабл Гам Машина", "§d§l", BarColor.PINK);
+        GUM_MACHINE("gum", "Бабл Гам Машина", "§d§l", BarColor.PINK),
+        UFO("ufo", "НЛО", "§a§l", BarColor.GREEN);
 
         final String key;
         final String title;
@@ -134,6 +136,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (k.startsWith("плох") || k.startsWith("weather") || k.startsWith("storm")) return BAD_WEATHER;
             if (k.startsWith("метео") || k.startsWith("meteor")) return METEOR_SHOWER;
             if (k.startsWith("крип") || k.startsWith("creep") || k.startsWith("party") || k.startsWith("пати")) return CREEPER_PARTY;
+            if (k.startsWith("нло") || k.startsWith("ufo") || k.startsWith("тарел")
+                    || k.startsWith("приш") || k.startsWith("alien") || k.startsWith("saucer")) return UFO;
             // Машину проверяем до «2x»: «бабл гам» с цифрами не пересекается, зато
             // слово «gum» короткое и его легко перехватить чужим префиксом.
             if (k.startsWith("бабл") || k.startsWith("гам") || k.startsWith("жвач")
@@ -274,6 +278,24 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private double gumCooldownSeconds = 8.0;
     private boolean gumBusy = false;
     private static final String GUM_SNAPSHOT_FILE = "gum-snapshot.yml";
+
+    // «НЛО»: пять тарелок кружат над спавном и лучом забирают мобов.
+    private boolean ufoEnabled = true;
+    private int ufoDuration = 300;
+    private boolean ufoIncludeInAuto = false;
+    private String ufoBlueprint = "ufo_abductor";
+    private List<String> ufoSpawnPoints = new ArrayList<>();
+    private double ufoRoamRadius = 12.0;
+    private double ufoSpeed = 0.09;
+    private double ufoBeamRange = 5.0;
+    private double ufoChance = 12.0;
+    private int ufoTryInterval = 60;
+    private double ufoRiseBlocks = 4.5;
+    private double ufoHoldMinSeconds = 3.0;
+    private double ufoHoldMaxSeconds = 5.0;
+    private double ufoCooldownSeconds = 15.0;
+    private int ufoMaxBeams = 2;
+    private static final String UFO_TAG = "BRAINROT_UFO";
     private String regionName = "spawn";
     private double regionPadding = 8;
     private double manualMinX = 0, manualMinZ = 0, manualMaxX = 0, manualMaxZ = 0;
@@ -311,8 +333,11 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         restoreRoadsAfterCrash();
         // …и если он упал с поставленной бабл-гам машиной — откатить регион по снимку.
         restoreGumAfterCrash();
+        // Тарелки — обычные сущности: если сервер упал с идущим ивентом, они остались
+        // висеть в мире. Убираем по тегу.
+        cleanupStrayUfos();
         getLogger().info("BrainrotEvents включён. Трек: " + soundKey
-                + ", ивенты: Плохая Погода / Метеоритный Дождь / Крипер Пати / 3 Тропы / 2x Удача / Бабл Гам Машина");
+                + ", ивенты: Плохая Погода / Метеоритный Дождь / Крипер Пати / 3 Тропы / 2x Удача / Бабл Гам Машина / НЛО");
     }
 
     @Override
@@ -447,6 +472,31 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         // и при падении сервера мы откатим регион по нему на следующем старте.
         changed |= def("events.gum-machine.state.active", false);
         changed |= def("events.gum-machine.state.world", "");
+        // «НЛО»: пять тарелок висят над спавном, летают по кругу и лучом забирают мобов.
+        changed |= def("events.ufo.enabled", true);
+        changed |= def("events.ufo.duration-seconds", 300);
+        changed |= def("events.ufo.include-in-auto", false);
+        // Блюпринт ModelEngine (plugins/ModelEngine/blueprints/<id>.bbmodel).
+        changed |= def("events.ufo.blueprint", "ufo_abductor");
+        // Точки появления. Первые две — заданные вручную, остальные рядом.
+        if (!cfg.isList("events.ufo.spawn-points")) {
+            cfg.set("events.ufo.spawn-points", new ArrayList<>(List.of(
+                    "-17 52 69", "-17 52 61", "-31 52 69", "-31 52 61", "-24 52 65")));
+            changed = true;
+        }
+        // Насколько далеко тарелка может уйти от своей точки. Наружу спавна не улетит.
+        changed |= def("events.ufo.roam-radius", 12.0);
+        changed |= def("events.ufo.speed", 0.09);
+        // На какой горизонтальной дистанции тарелка «видит» моба под собой.
+        changed |= def("events.ufo.beam-range", 5.0);
+        changed |= def("events.ufo.chance-percent", 12.0);
+        changed |= def("events.ufo.try-interval-ticks", 60);
+        changed |= def("events.ufo.rise-blocks", 4.5);
+        changed |= def("events.ufo.hold-seconds-min", 3.0);
+        changed |= def("events.ufo.hold-seconds-max", 5.0);
+        changed |= def("events.ufo.cooldown-seconds", 15.0);
+        // Сколько мобов может висеть в лучах одновременно.
+        changed |= def("events.ufo.max-beams", 2);
         changed |= def("events.region.worldguard-region", "spawn");
         changed |= def("events.region.padding", 8);
         changed |= def("events.region.min-x", 0);
@@ -554,6 +604,22 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         gumHoldMinSeconds    = Math.max(0.5, cfg.getDouble("events.gum-machine.hold-seconds-min", 4.0));
         gumHoldMaxSeconds    = Math.max(gumHoldMinSeconds, cfg.getDouble("events.gum-machine.hold-seconds-max", 5.0));
         gumCooldownSeconds   = Math.max(0.0, cfg.getDouble("events.gum-machine.cooldown-seconds", 8.0));
+        ufoEnabled           = cfg.getBoolean("events.ufo.enabled", true);
+        ufoDuration          = Math.max(5, cfg.getInt("events.ufo.duration-seconds", 300));
+        ufoIncludeInAuto     = cfg.getBoolean("events.ufo.include-in-auto", false);
+        ufoBlueprint         = cfg.getString("events.ufo.blueprint", "ufo_abductor");
+        ufoSpawnPoints       = new ArrayList<>(cfg.getStringList("events.ufo.spawn-points"));
+        if (ufoSpawnPoints.isEmpty()) ufoSpawnPoints.add("-17 52 69");
+        ufoRoamRadius        = Math.max(2.0, cfg.getDouble("events.ufo.roam-radius", 12.0));
+        ufoSpeed             = Math.max(0.02, Math.min(0.6, cfg.getDouble("events.ufo.speed", 0.09)));
+        ufoBeamRange         = Math.max(1.0, cfg.getDouble("events.ufo.beam-range", 5.0));
+        ufoChance            = Math.max(0.0, Math.min(100.0, cfg.getDouble("events.ufo.chance-percent", 12.0)));
+        ufoTryInterval       = Math.max(10, cfg.getInt("events.ufo.try-interval-ticks", 60));
+        ufoRiseBlocks        = Math.max(1.0, cfg.getDouble("events.ufo.rise-blocks", 4.5));
+        ufoHoldMinSeconds    = Math.max(0.5, cfg.getDouble("events.ufo.hold-seconds-min", 3.0));
+        ufoHoldMaxSeconds    = Math.max(ufoHoldMinSeconds, cfg.getDouble("events.ufo.hold-seconds-max", 5.0));
+        ufoCooldownSeconds   = Math.max(0.0, cfg.getDouble("events.ufo.cooldown-seconds", 15.0));
+        ufoMaxBeams          = Math.max(1, cfg.getInt("events.ufo.max-beams", 2));
         regionName           = cfg.getString("events.region.worldguard-region", "spawn");
         regionPadding        = Math.max(0, cfg.getDouble("events.region.padding", 8));
         manualMinX           = cfg.getDouble("events.region.min-x", 0);
@@ -689,6 +755,10 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 return false;
             }
         }
+        if (type == EventType.UFO && !ufoEnabled) {
+            if (feedback != null) feedback.sendMessage("§cИвент «НЛО» отключён в конфиге.");
+            return false;
+        }
         if (isActive(type)) {
             if (type == EventType.THREE_ROADS) {
                 // Карта уже перестроена. Разбирать её и строить заново — это две лишние
@@ -718,6 +788,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 case THREE_ROADS -> roadsDuration;
                 case LUCKY_2X -> luckDuration;
                 case GUM_MACHINE -> gumDuration;
+                case UFO -> ufoDuration;
             };
         }
 
@@ -739,6 +810,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 case THREE_ROADS -> Sound.ENTITY_PLAYER_LEVELUP;
                 case LUCKY_2X -> Sound.ENTITY_PLAYER_LEVELUP;
                 case GUM_MACHINE -> Sound.ENTITY_SLIME_SQUISH;
+                case UFO -> Sound.BLOCK_BEACON_ACTIVATE;
             }, 0.7f, 0.8f);
         }
 
@@ -759,6 +831,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 if (!isGumMachineUp()) startGumMachine(session);
                 else getLogger().info("Бабл Гам Машина: уже стоит, продлеваю ивент до " + seconds + "с.");
             }
+            case UFO -> startUfoEvent(session);
         }
 
         getLogger().info("Ивент " + type.title + " запущен на " + seconds + "с в мире " + world.getName()
@@ -874,6 +947,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             case THREE_ROADS -> teardownThreeRoads(s.world);
             case LUCKY_2X -> stopLucky2x();
             case GUM_MACHINE -> teardownGumMachine(s.world);
+            case UFO -> teardownUfoEvent();
         }
 
         if (sessions.isEmpty() && barTask != null) {
@@ -915,6 +989,11 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 // Включается events.gum-machine.include-in-auto.
                 if (gumEnabled && gumIncludeInAuto && !gumBusy && !isActive(EventType.GUM_MACHINE)) {
                     pool.add(EventType.GUM_MACHINE);
+                }
+                // НЛО тоже руками: тарелки видны только с ModelEngine, и лучше
+                // включать их осознанно. events.ufo.include-in-auto.
+                if (ufoEnabled && ufoIncludeInAuto && !isActive(EventType.UFO)) {
+                    pool.add(EventType.UFO);
                 }
                 if (pool.isEmpty()) return;
                 startEvent(pool.get(random.nextInt(pool.size())), 0, null);
@@ -2039,6 +2118,365 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     }
 
     // =========================================================
+    // ИВЕНТ 7: НЛО (тарелки летают, луч забирает моба -> мутация «Инопланетный»)
+    // =========================================================
+    /**
+     * Тарелки — это невидимые ArmorStand'ы с моделью ModelEngine, которые мы сами
+     * телепортируем каждый тик. Своего ИИ у них нет специально: ванильный ИИ полез бы
+     * в стены и мог бы уйти со спавна, а нам нужно ровно наоборот — держаться своей
+     * точки, не подниматься по Y и не проходить сквозь блоки.
+     *
+     * Подъём моба живёт в спавнере (startAbduction): мобов на конвейере каждый тик
+     * телепортирует их собственная задача движения, снаружи их не поднять.
+     */
+    private static final class UfoUnit {
+        final Entity carrier;
+        final Location home;
+        double x, y, z;
+        double dirX, dirZ;
+        int turnIn;              // через сколько тиков сменить курс
+        long readyAtMillis;      // кулдаун луча
+        Entity target;           // кого держим лучом
+        int beamTicks;           // сколько тиков ещё идёт захват
+        int beamTotal;
+
+        UfoUnit(Entity carrier, Location home) {
+            this.carrier = carrier;
+            this.home = home;
+            this.x = home.getX();
+            this.y = home.getY();
+            this.z = home.getZ();
+        }
+    }
+
+    private final List<UfoUnit> ufos = new ArrayList<>();
+    private BukkitTask ufoTask;
+
+    private void startUfoEvent(EventSession session) {
+        final World world = session.world;
+        if (world == null) return;
+        clearUfos();
+
+        boolean modelOk = isSpawnerModelEngineAvailable();
+        int spawned = 0;
+        for (String raw : ufoSpawnPoints) {
+            Location home = parseRoadsPoint(world, raw);
+            if (home == null) {
+                getLogger().warning("НЛО: не разобрал точку '" + raw + "' в events.ufo.spawn-points.");
+                continue;
+            }
+            Entity carrier = spawnUfoCarrier(home);
+            if (carrier == null) continue;
+            if (modelOk && !attachSpawnerModel(carrier, ufoBlueprint)) {
+                getLogger().warning("НЛО: модель '" + ufoBlueprint + "' не встала на тарелку.");
+            }
+            playSpawnerModel(carrier, "idle", true);
+            ufos.add(new UfoUnit(carrier, home));
+            spawned++;
+        }
+        if (spawned == 0) {
+            getLogger().severe("НЛО: не появилось ни одной тарелки, ивент отменяю.");
+            stopEvent(EventType.UFO, true);
+            return;
+        }
+        if (!modelOk) {
+            getLogger().warning("НЛО: ModelEngine недоступен — тарелки будут невидимыми, "
+                    + "но луч и мутация работают. Поставь блюпринт " + ufoBlueprint + ".");
+        }
+
+        ufoTask = new BukkitRunnable() {
+            long tick = 0;
+            @Override public void run() {
+                if (!isActive(EventType.UFO)) { cancel(); return; }
+                tick++;
+                tickUfos(tick);
+            }
+        }.runTaskTimer(this, 5L, 1L);
+        session.tasks.add(ufoTask);
+
+        for (Player p : world.getPlayers()) {
+            p.sendMessage("§a§l✦ НЛО над спавном! §7Тарелки забирают мобов и возвращают «Инопланетными».");
+            try { p.playSound(p.getLocation(), Sound.BLOCK_BEACON_ACTIVATE, 0.9f, 0.7f); }
+            catch (Throwable ignored) {}
+        }
+        getLogger().info("НЛО: поднял " + spawned + " тарелок в мире " + world.getName() + ".");
+    }
+
+    /** Носитель модели: невидимый, без гравитации, неуязвимый, без хитбокса-помехи. */
+    private Entity spawnUfoCarrier(Location home) {
+        try {
+            ArmorStand as = home.getWorld().spawn(home, ArmorStand.class, e -> {
+                e.setVisible(false);
+                e.setGravity(false);
+                e.setInvulnerable(true);
+                e.setSilent(true);
+                e.setMarker(true);
+                e.setPersistent(false);
+                e.setCustomNameVisible(false);
+                e.addScoreboardTag(UFO_TAG);
+            });
+            return as;
+        } catch (Throwable t) {
+            getLogger().warning("НЛО: не смог создать носителя модели: " + t);
+            return null;
+        }
+    }
+
+    private void tickUfos(long tick) {
+        for (UfoUnit u : new ArrayList<>(ufos)) {
+            if (u.carrier == null || !u.carrier.isValid() || u.carrier.isDead()) {
+                ufos.remove(u);
+                continue;
+            }
+            if (u.beamTicks > 0) tickUfoBeam(u);
+            else moveUfo(u);
+            if (u.beamTicks <= 0 && tick % ufoTryInterval == 0) tryUfoAbduction(u);
+        }
+    }
+
+    /**
+     * Полёт: только по горизонтали. Y фиксирован точкой появления — «вверх не будут
+     * вобще подниматься». Курс меняется сам и отражается от стен и от границы радиуса.
+     */
+    private void moveUfo(UfoUnit u) {
+        if (u.dirX == 0 && u.dirZ == 0) pickUfoCourse(u, null);
+        if (--u.turnIn <= 0) pickUfoCourse(u, null);
+
+        double nx = u.x + u.dirX * ufoSpeed;
+        double nz = u.z + u.dirZ * ufoSpeed;
+        boolean blocked = false;
+        // Дальше своего радиуса — разворот. Так тарелка не улетит за спавн.
+        double dx = nx - u.home.getX(), dz = nz - u.home.getZ();
+        if (dx * dx + dz * dz > ufoRoamRadius * ufoRoamRadius) blocked = true;
+        if (!blocked && !isUfoSpaceFree(u.carrier.getWorld(), nx, u.y, nz)) blocked = true;
+        if (blocked) {
+            // Отражаем курс и сразу пробуем новый: ждать тик — значит подрагивать в стене.
+            pickUfoCourse(u, u.home);
+            return;
+        }
+        u.x = nx;
+        u.z = nz;
+        applyUfoPosition(u, Math.toDegrees(Math.atan2(-u.dirX, u.dirZ)));
+    }
+
+    private void pickUfoCourse(UfoUnit u, Location pullTo) {
+        double angle;
+        if (pullTo != null) {
+            // Разворот к дому с разбросом — иначе тарелки залипают вдоль стены.
+            angle = Math.atan2(pullTo.getZ() - u.z, pullTo.getX() - u.x)
+                    + (random.nextDouble() - 0.5) * 1.2;
+        } else {
+            angle = random.nextDouble() * Math.PI * 2;
+        }
+        u.dirX = Math.cos(angle);
+        u.dirZ = Math.sin(angle);
+        u.turnIn = 60 + random.nextInt(80);
+    }
+
+    /** Свободно ли место под тарелку: сквозь стены она не летает. */
+    private boolean isUfoSpaceFree(World world, double x, double y, double z) {
+        try {
+            for (int dy = 0; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    for (int dz = -1; dz <= 1; dz++) {
+                        Block b = world.getBlockAt((int) Math.floor(x) + dx, (int) Math.floor(y) + dy,
+                                (int) Math.floor(z) + dz);
+                        if (!b.isPassable()) return false;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return true;
+    }
+
+    private void applyUfoPosition(UfoUnit u, double yaw) {
+        try {
+            Location loc = new Location(u.carrier.getWorld(), u.x, u.y, u.z, (float) yaw, 0f);
+            u.carrier.teleport(loc);
+        } catch (Throwable ignored) {}
+    }
+
+    /** Кубик на захват: моб должен быть рядом и НИЖЕ тарелки. */
+    private void tryUfoAbduction(UfoUnit u) {
+        if (System.currentTimeMillis() < u.readyAtMillis) return;
+        if (countUfoBeams() >= ufoMaxBeams) return;
+        if (random.nextDouble() * 100.0 >= ufoChance) return;
+
+        Entity best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (Entity mob : getSpawnerMobs()) {
+            if (mob == null || !mob.isValid() || mob.isDead()) continue;
+            if (!mob.getWorld().equals(u.carrier.getWorld())) continue;
+            Location l = mob.getLocation();
+            if (l.getY() > u.y - 0.5) continue;      // моб должен быть под тарелкой
+            double d = Math.hypot(l.getX() - u.x, l.getZ() - u.z);
+            if (d > ufoBeamRange || d >= bestDist) continue;
+            if (isSpawnerAbducted(mob)) continue;
+            best = mob;
+            bestDist = d;
+        }
+        if (best == null) return;
+
+        int hold = (int) Math.round((ufoHoldMinSeconds
+                + random.nextDouble() * (ufoHoldMaxSeconds - ufoHoldMinSeconds)) * 20.0);
+        // Столько поднимаем, чтобы моб не влез в саму тарелку.
+        double rise = Math.min(ufoRiseBlocks, Math.max(1.0, u.y - best.getLocation().getY() - 1.5));
+        if (!startSpawnerAbduction(best, rise, hold, "ALIEN")) return;
+
+        u.target = best;
+        // 50 тиков подъём + висение + 40 тиков возврат — так считает лифт в спавнере.
+        u.beamTotal = 50 + hold + 40;
+        u.beamTicks = u.beamTotal;
+        u.readyAtMillis = System.currentTimeMillis() + (long) (ufoCooldownSeconds * 1000.0)
+                + u.beamTotal * 50L;
+        playSpawnerModel(u.carrier, "beam_on", false);
+    }
+
+    /**
+     * Пока луч работает, тарелка висит над мобом: иначе моб уезжает по конвейеру
+     * из-под луча и картинка рассыпается. Двигаемся только по горизонтали.
+     */
+    private void tickUfoBeam(UfoUnit u) {
+        u.beamTicks--;
+        Entity mob = u.target;
+        if (mob != null && mob.isValid() && !mob.isDead()) {
+            Location l = mob.getLocation();
+            // Догоняем моба плавно — резкий телепорт выглядел бы как рывок модели.
+            double followX = u.x + (l.getX() - u.x) * 0.25;
+            double followZ = u.z + (l.getZ() - u.z) * 0.25;
+            double dx = followX - u.home.getX(), dz = followZ - u.home.getZ();
+            // За радиус не выходим даже за мобом: иначе тарелка уедет со спавна.
+            if (dx * dx + dz * dz <= (ufoRoamRadius + ufoBeamRange) * (ufoRoamRadius + ufoBeamRange)
+                    && isUfoSpaceFree(u.carrier.getWorld(), followX, u.y, followZ)) {
+                u.x = followX;
+                u.z = followZ;
+            }
+            applyUfoPosition(u, Math.toDegrees(Math.atan2(-(l.getX() - u.x), l.getZ() - u.z)));
+        }
+        int passed = u.beamTotal - u.beamTicks;
+        if (passed == 50) playSpawnerModel(u.carrier, "abduct", false);
+        if (u.beamTicks == 40) playSpawnerModel(u.carrier, "beam_off", false);
+        if (u.beamTicks <= 0) {
+            u.target = null;
+            u.beamTotal = 0;
+            playSpawnerModel(u.carrier, "idle", true);
+        }
+    }
+
+    private int countUfoBeams() {
+        int n = 0;
+        for (UfoUnit u : ufos) if (u.beamTicks > 0) n++;
+        return n;
+    }
+
+    private void teardownUfoEvent() {
+        if (ufoTask != null) { try { ufoTask.cancel(); } catch (Throwable ignored) {} ufoTask = null; }
+        clearSpawnerAbductions();
+        clearUfos();
+    }
+
+    private void clearUfos() {
+        for (UfoUnit u : new ArrayList<>(ufos)) {
+            try {
+                detachSpawnerModel(u.carrier);
+                if (u.carrier != null && u.carrier.isValid()) u.carrier.remove();
+            } catch (Throwable ignored) {}
+        }
+        ufos.clear();
+    }
+
+    /** Тарелки после падения сервера: ищем по тегу во всех мирах. */
+    private void cleanupStrayUfos() {
+        int removed = 0;
+        for (World w : Bukkit.getWorlds()) {
+            for (Entity e : w.getEntities()) {
+                try {
+                    if (!e.getScoreboardTags().contains(UFO_TAG)) continue;
+                    detachSpawnerModel(e);
+                    e.remove();
+                    removed++;
+                } catch (Throwable ignored) {}
+            }
+        }
+        if (removed > 0) getLogger().warning("НЛО: убрал " + removed + " тарелок с прошлого запуска.");
+    }
+
+    // ----- мост к спавнеру для НЛО -----
+
+    private boolean startSpawnerAbduction(Entity mob, double rise, int holdTicks, String mutation) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return false;
+        try {
+            Object res = spawner.getClass()
+                    .getMethod("startAbduction", Entity.class, double.class, int.class, String.class)
+                    .invoke(spawner, mob, rise, holdTicks, mutation);
+            return !(res instanceof Boolean b) || b;
+        } catch (NoSuchMethodException ex) {
+            getLogger().warning("НЛО: в установленном BrainrotSpawner нет startAbduction — обнови спавнер.");
+            return false;
+        } catch (Throwable t) {
+            getLogger().warning("НЛО: не удалось поднять моба лучом: " + t);
+            return false;
+        }
+    }
+
+    private boolean isSpawnerAbducted(Entity mob) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return false;
+        try {
+            Object res = spawner.getClass().getMethod("isAbducted", Entity.class).invoke(spawner, mob);
+            return res instanceof Boolean b && b;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private void clearSpawnerAbductions() {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return;
+        try { spawner.getClass().getMethod("clearAbductions").invoke(spawner); }
+        catch (Throwable ignored) {}
+    }
+
+    private boolean isSpawnerModelEngineAvailable() {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return false;
+        try {
+            Object res = spawner.getClass().getMethod("isModelEngineAvailable").invoke(spawner);
+            return res instanceof Boolean b && b;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    private boolean attachSpawnerModel(Entity entity, String blueprint) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return false;
+        try {
+            Object res = spawner.getClass().getMethod("attachEventModel", Entity.class, String.class)
+                    .invoke(spawner, entity, blueprint);
+            return res instanceof Boolean b && b;
+        } catch (Throwable t) {
+            getLogger().warning("НЛО: не смог повесить модель: " + t);
+            return false;
+        }
+    }
+
+    private void playSpawnerModel(Entity entity, String animation, boolean loop) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return;
+        try {
+            spawner.getClass().getMethod("playEventModel", Entity.class, String.class, boolean.class)
+                    .invoke(spawner, entity, animation, loop);
+        } catch (Throwable ignored) {}
+    }
+
+    private void detachSpawnerModel(Entity entity) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return;
+        try { spawner.getClass().getMethod("detachEventModel", Entity.class).invoke(spawner, entity); }
+        catch (Throwable ignored) {}
+    }
+
+    // =========================================================
     // РЕГИОН (WorldGuard -> конвейеры -> ручной бокс)
     // =========================================================
     private double[] getRegionBounds(World world) {
@@ -2533,7 +2971,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 return filter(List.of("start", "stop", "status", "reload"), args[0]);
             }
             if (args.length == 2 && (args[0].equalsIgnoreCase("start") || args[0].equalsIgnoreCase("stop"))) {
-                return filter(List.of("badweather", "meteor", "creeper", "3road", "2x", "gum"), args[1]);
+                return filter(List.of("badweather", "meteor", "creeper", "3road", "2x", "gum", "ufo"), args[1]);
             }
             if (args.length == 3 && args[0].equalsIgnoreCase("start")) {
                 return filter(List.of("60", "120", "180", "300"), args[2]);

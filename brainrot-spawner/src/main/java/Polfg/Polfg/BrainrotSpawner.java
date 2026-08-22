@@ -123,21 +123,39 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private volatile long gumReadyAtMillis = 0L;
     private final Map<Entity, GumLift> gumLifts = new HashMap<>();
 
+    // ===== Луч НЛО (ивент BrainrotEvents) =====
+    // Отличие от бабл-гам машины: там триггер — точка на конвейере и шанс кидает
+    // сам спавнер, а тут моба выбирает ивент (НЛО должно физически висеть над ним)
+    // и заказывает подъём вызовом startAbduction. Сам подъём всё равно живёт здесь:
+    // моба каждый тик телепортирует задача движения, снаружи его не поднять.
+    private final Map<Entity, GumLift> abductLifts = new HashMap<>();
+
     /** Состояние одного моба в пузыре: вверх → висит → вниз. */
     private static final class GumLift {
         private final double maxOffset;
         private final double riseSpeed;
         private final double fallSpeed;
+        /** Что выдать на посадке: имя из Mutation. */
+        private final String mutation;
         private int holdTicks;
         private int phase = 0; // 0 — поднимается, 1 — висит, 2 — падает
         private double offset = 0.0;
 
         GumLift(double maxOffset, int holdTicks) {
+            this(maxOffset, holdTicks, "BUBBLEGUM", 30.0, 16.0);
+        }
+
+        /**
+         * @param riseDiv  за сколько тиков пройти путь вверх
+         * @param fallDiv  за сколько тиков вернуться
+         */
+        GumLift(double maxOffset, int holdTicks, String mutation, double riseDiv, double fallDiv) {
             this.maxOffset = Math.max(0.5, maxOffset);
             this.holdTicks = Math.max(1, holdTicks);
+            this.mutation = (mutation == null || mutation.isEmpty()) ? "BUBBLEGUM" : mutation;
             // ~1.5 секунды на подъём, падение примерно вдвое быстрее.
-            this.riseSpeed = Math.max(0.05, this.maxOffset / 30.0);
-            this.fallSpeed = Math.max(0.10, this.maxOffset / 16.0);
+            this.riseSpeed = Math.max(0.05, this.maxOffset / Math.max(1.0, riseDiv));
+            this.fallSpeed = Math.max(0.10, this.maxOffset / Math.max(1.0, fallDiv));
         }
 
         /** @return true, когда моб вернулся на конвейер и лифт можно снимать. */
@@ -165,6 +183,8 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         }
 
         double offset() { return offset; }
+        double maxOffset() { return maxOffset; }
+        String mutation() { return mutation; }
         boolean rising() { return phase == 0; }
         boolean holding() { return phase == 1; }
     }
@@ -251,7 +271,9 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         METEOR("Метеоритный", "§c", 4.0, 0),
         EXPLOSIVE("Взрывной", "§a", 3.5, 0),
         // Выдаётся только бабл-гам машиной: моб зависает в пузыре и падает уже с ней.
-        BUBBLEGUM("Баблгамовый", "§d", 4.0, 0);
+        BUBBLEGUM("Баблгамовый", "§d", 4.0, 0),
+        // Выдаётся только НЛО: луч поднимает моба в тарелку и возвращает уже с ней.
+        ALIEN("Инопланетный", "§2", 4.5, 0);
 
         final String displayName;
         final String format;
@@ -1103,6 +1125,14 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 if (tick % 14 == 0)
                     mob.getWorld().spawnParticle(Particle.ITEM_SLIME, p.clone().add(0, 0.2, 0), 2, 0.2, 0.15, 0.2, 0.0);
             }
+            case ALIEN -> {
+                // Кислотно-зелёная пыль под цвет луча НЛО плюс редкие искры-«сканы».
+                if (tick % 4 == 0)
+                    mob.getWorld().spawnParticle(Particle.DUST, p, 3, 0.28, 0.3, 0.28, 0,
+                            new Particle.DustOptions(Color.fromRGB(120, 255, 120), 1.0f));
+                if (tick % 12 == 0)
+                    mob.getWorld().spawnParticle(Particle.END_ROD, p.clone().add(0, 0.3, 0), 1, 0.2, 0.15, 0.2, 0.0);
+            }
             case RAINBOW -> {
                 if (tick % 2 == 0) {
                     Color[] colors = {Color.RED, Color.ORANGE, Color.YELLOW, Color.GREEN, Color.AQUA, Color.BLUE, Color.PURPLE};
@@ -1893,8 +1923,10 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 }
                 Vector dirVec = getDirectionVector(direction);
                 double baseY = spawnLoc.getY();
-                // Бабл-гам машина: пока моб в пузыре, конвейер для него стоит —
-                // traveledDistance не растёт, меняется только высота.
+                // Бабл-гам машина и луч НЛО: пока моб висит, конвейер для него стоит —
+                // traveledDistance не растёт, меняется только высота. Оба лифта — один
+                // и тот же класс, разница только в том, кто его заказал и какая мутация
+                // выдаётся на посадке.
                 GumLift gumLift = gumLifts.get(finalMob);
                 if (gumLift == null && gumMachineActive) {
                     double curX = initialLoc.getX() + dirVec.getX() * traveledDistance;
@@ -1906,7 +1938,16 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                     finishGumLift(finalMob);
                     gumLift = null;
                 }
-                if (gumLift == null) traveledDistance += speed;
+                // Луч НЛО. Заказывается снаружи (startAbduction), поэтому здесь только
+                // тикается: моб уезжает вверх, висит и возвращается на своё же место
+                // конвейера — «забрали и отдали».
+                GumLift beamLift = abductLifts.get(finalMob);
+                if (beamLift != null && beamLift.tick()) {
+                    abductLifts.remove(finalMob);
+                    finishAbduction(finalMob, beamLift);
+                    beamLift = null;
+                }
+                if (gumLift == null && beamLift == null) traveledDistance += speed;
                 double newX = initialLoc.getX() + dirVec.getX() * traveledDistance;
                 double newZ = initialLoc.getZ() + dirVec.getZ() * traveledDistance;
                 double newY = baseY;
@@ -1914,6 +1955,10 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 if (gumLift != null) {
                     newY += gumLift.offset();
                     tickGumLiftEffects(finalMob, gumLift, newX, newY, newZ, tick);
+                }
+                if (beamLift != null) {
+                    newY += beamLift.offset();
+                    tickAbductionEffects(finalMob, beamLift, newX, newY, newZ, tick);
                 }
                 float yaw = getYawFromDirection(direction);
                 // Модель ModelEngine рисуется по yaw подложки, поэтому разворот
@@ -2045,6 +2090,117 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         world.spawnParticle(Particle.DUST, loc, 40, 0.5, 0.5, 0.5, 0,
                 new Particle.DustOptions(org.bukkit.Color.fromRGB(255, 105, 180), 1.3f));
         world.spawnParticle(Particle.ITEM_SLIME, loc, 25, 0.45, 0.45, 0.45, 0.0);
+    }
+
+    // ===== Луч НЛО: подъём, эффекты, посадка =====
+
+    /**
+     * Зелёный столб от моба вверх, к тарелке. Рисуем именно столбом, а не облаком
+     * вокруг моба: в отличие от пузыря здесь должно читаться, что моба тянет вверх
+     * что-то висящее над ним, и столб частиц соединяет моба с НЛО.
+     */
+    private void tickAbductionEffects(Entity mob, GumLift lift, double x, double y, double z, long tick) {
+        World world = mob.getWorld();
+        Location center = new Location(world, x, y + 0.6, z);
+        if (tick % 2 == 0) {
+            world.spawnParticle(Particle.DUST, center, 5, 0.4, 0.5, 0.4, 0,
+                    new Particle.DustOptions(org.bukkit.Color.fromRGB(120, 255, 120), 1.1f));
+        }
+        // Столб вверх до тарелки: сколько ещё осталось поднять + запас на корпус.
+        if (tick % 3 == 0) {
+            double left = Math.max(0.0, lift.maxOffset() - lift.offset()) + 1.5;
+            for (double dy = 0.5; dy <= left; dy += 0.8) {
+                world.spawnParticle(Particle.DUST, new Location(world, x, y + dy, z), 1, 0.25, 0.1, 0.25, 0,
+                        new Particle.DustOptions(org.bukkit.Color.fromRGB(150, 255, 170), 0.9f));
+            }
+        }
+        if (lift.rising() && tick % 10 == 0) {
+            world.playSound(center, Sound.BLOCK_BEACON_AMBIENT, 0.6f, 1.8f);
+        }
+        if (lift.holding() && tick % 15 == 0) {
+            world.spawnParticle(Particle.END_ROD, center, 3, 0.35, 0.35, 0.35, 0.0);
+        }
+    }
+
+    /** Моб вернулся на конвейер — и уже с мутацией, которую заказал ивент. */
+    private void finishAbduction(Entity mob, GumLift lift) {
+        if (mob == null || !mob.isValid() || mob.isDead()) return;
+        applyStackableMutation(mob, lift == null ? "ALIEN" : lift.mutation());
+        World world = mob.getWorld();
+        Location loc = mob.getLocation().add(0, 0.6, 0);
+        try {
+            world.playSound(loc, Sound.ENTITY_ILLUSIONER_MIRROR_MOVE, 1.0f, 1.4f);
+            world.playSound(loc, Sound.BLOCK_BEACON_DEACTIVATE, 0.7f, 1.6f);
+        } catch (Throwable ignored) {}
+        world.spawnParticle(Particle.DUST, loc, 40, 0.5, 0.5, 0.5, 0,
+                new Particle.DustOptions(org.bukkit.Color.fromRGB(120, 255, 120), 1.3f));
+        world.spawnParticle(Particle.END_ROD, loc, 15, 0.4, 0.4, 0.4, 0.02);
+    }
+
+    /**
+     * Забрать моба лучом. Зовётся ивентом через рефлексию.
+     *
+     * @param mob       моб с конвейера (из getSpawnerMobs)
+     * @param riseUp    на сколько блоков поднять
+     * @param holdTicks сколько тиков держать наверху
+     * @param mutation  имя мутации из Mutation; пустое — «ALIEN»
+     * @return true, если подъём начался (моб на конвейере, свободен и жив)
+     */
+    public boolean startAbduction(Entity mob, double riseUp, int holdTicks, String mutation) {
+        if (mob == null || !mob.isValid() || mob.isDead()) return false;
+        // Только «наши» мобы с конвейера: у купленного и уехавшего на базу другая
+        // задача движения, и лифт там никто не тикает — моб застыл бы в воздухе.
+        if (!movementTasks.containsKey(mob)) return false;
+        if (abductLifts.containsKey(mob) || gumLifts.containsKey(mob)) return false;
+        String mut = (mutation == null || mutation.isEmpty()) ? "ALIEN" : mutation.toUpperCase(Locale.ROOT);
+        if (hasStackableMutation(mob, mut)) return false;
+        // Подъём медленнее пузыря (~2.5 с) и возврат такой же плавный: моб не падает,
+        // его аккуратно ставят обратно.
+        abductLifts.put(mob, new GumLift(riseUp, holdTicks, mut, 50.0, 40.0));
+        try {
+            mob.getWorld().playSound(mob.getLocation(), Sound.BLOCK_BEACON_ACTIVATE, 1.0f, 1.9f);
+        } catch (Throwable ignored) {}
+        return true;
+    }
+
+    /** Сколько мобов сейчас висит в лучах — ивент по этому числу держит лимит. */
+    public int getAbductionCount() {
+        return abductLifts.size();
+    }
+
+    public boolean isAbducted(Entity mob) {
+        return mob != null && abductLifts.containsKey(mob);
+    }
+
+    /** Ивент кончился: лифты снимаются, мобы просто поедут дальше со своей высоты. */
+    public void clearAbductions() {
+        abductLifts.clear();
+    }
+
+    // ===== Мост к ModelEngine для ивентов =====
+    // ModelEngineHook лежит в спавнере и завязан на его зависимости, а brainrot-events
+    // про ModelEngine не знает вообще. Чтобы не тащить туда вторую копию рефлексии,
+    // ивент вешает модель через эти методы (сам вызывает их рефлексией).
+
+    public boolean isModelEngineAvailable() {
+        return ModelEngineHook.isAvailable();
+    }
+
+    public boolean attachEventModel(Entity entity, String blueprint) {
+        if (entity == null || blueprint == null || blueprint.isEmpty()) return false;
+        return ModelEngineHook.attach(entity, blueprint);
+    }
+
+    /** loop=true — гонять по кругу (полёт, луч), false — один раз (захват). */
+    public boolean playEventModel(Entity entity, String animation, boolean loop) {
+        if (entity == null || animation == null || animation.isEmpty()) return false;
+        if (!ModelEngineHook.hasModel(entity)) return false;
+        return loop ? ModelEngineHook.loop(entity, animation) : ModelEngineHook.playForced(entity, animation);
+    }
+
+    public void detachEventModel(Entity entity) {
+        if (entity == null) return;
+        ModelEngineHook.detach(entity);
     }
 
     // ===== Публичный API для BrainrotEvents (вызывается рефлексией) =====
