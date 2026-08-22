@@ -28,6 +28,7 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Creeper;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Fireball;
@@ -114,7 +115,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         METEOR_SHOWER("meteor", "Метеоритный Дождь", "§c§l", BarColor.RED),
         CREEPER_PARTY("creeper", "Крипер Пати", "§a§l", BarColor.GREEN),
         THREE_ROADS("3road", "3 Тропы", "§6§l", BarColor.YELLOW),
-        LUCKY_2X("2x", "2x Удача", "§d§l", BarColor.PURPLE);
+        LUCKY_2X("2x", "2x Удача", "§d§l", BarColor.PURPLE),
+        GUM_MACHINE("gum", "Бабл Гам Машина", "§d§l", BarColor.PINK);
 
         final String key;
         final String title;
@@ -132,6 +134,10 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (k.startsWith("плох") || k.startsWith("weather") || k.startsWith("storm")) return BAD_WEATHER;
             if (k.startsWith("метео") || k.startsWith("meteor")) return METEOR_SHOWER;
             if (k.startsWith("крип") || k.startsWith("creep") || k.startsWith("party") || k.startsWith("пати")) return CREEPER_PARTY;
+            // Машину проверяем до «2x»: «бабл гам» с цифрами не пересекается, зато
+            // слово «gum» короткое и его легко перехватить чужим префиксом.
+            if (k.startsWith("бабл") || k.startsWith("гам") || k.startsWith("жвач")
+                    || k.startsWith("gum") || k.startsWith("bubble")) return GUM_MACHINE;
             // «2x удача» проверяется раньше троп: иначе «2x» съел бы префикс-матч по цифре.
             if (k.startsWith("удач") || k.startsWith("luck") || k.startsWith("2") || k.equals("x2")) return LUCKY_2X;
             if (k.startsWith("троп") || k.startsWith("3") || k.startsWith("три") || k.startsWith("road")
@@ -252,6 +258,21 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private int luckDuration = 300;
     private boolean luckIncludeInAuto = false;
     private double luckMultiplier = 2.0;
+
+    // «Бабл Гам Машина»
+    private boolean gumEnabled = true;
+    private int gumDuration = 300;
+    private boolean gumIncludeInAuto = false;
+    private String gumSchematic = "gumbubble";
+    private String gumPos1 = "-44 54 68";
+    private String gumPos2 = "-40 47 62";
+    private String gumTrigger = "-42 46 65";
+    private double gumTopY = 53;
+    private double gumChance = 10;
+    private double gumHoldMinSeconds = 4.0;
+    private double gumHoldMaxSeconds = 5.0;
+    private boolean gumBusy = false;
+    private static final String GUM_SNAPSHOT_FILE = "gum-snapshot.yml";
     private String regionName = "spawn";
     private double regionPadding = 8;
     private double manualMinX = 0, manualMinZ = 0, manualMaxX = 0, manualMaxZ = 0;
@@ -287,8 +308,10 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         startAutoScheduler();
         // Если сервер упал с открытыми «3 Тропами» — вернуть схему и дёрн.
         restoreRoadsAfterCrash();
+        // …и если он упал с поставленной бабл-гам машиной — откатить регион по снимку.
+        restoreGumAfterCrash();
         getLogger().info("BrainrotEvents включён. Трек: " + soundKey
-                + ", ивенты: Плохая Погода / Метеоритный Дождь / Крипер Пати / 3 Тропы / 2x Удача");
+                + ", ивенты: Плохая Погода / Метеоритный Дождь / Крипер Пати / 3 Тропы / 2x Удача / Бабл Гам Машина");
     }
 
     @Override
@@ -405,6 +428,22 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         changed |= def("events.lucky-2x.duration-seconds", 300);
         changed |= def("events.lucky-2x.include-in-auto", false);
         changed |= def("events.lucky-2x.multiplier", 2.0);
+        // «Бабл Гам Машина»: схема встаёт над конвейером, моб с шансом залипает в пузыре.
+        changed |= def("events.gum-machine.enabled", true);
+        changed |= def("events.gum-machine.duration-seconds", 300);
+        changed |= def("events.gum-machine.include-in-auto", false);
+        changed |= def("events.gum-machine.schematic", "gumbubble");
+        changed |= def("events.gum-machine.region.pos1", "-44 54 68");
+        changed |= def("events.gum-machine.region.pos2", "-40 47 62");
+        changed |= def("events.gum-machine.trigger", "-42 46 65");
+        changed |= def("events.gum-machine.top-y", 53);
+        changed |= def("events.gum-machine.chance-percent", 10);
+        changed |= def("events.gum-machine.hold-seconds-min", 4.0);
+        changed |= def("events.gum-machine.hold-seconds-max", 5.0);
+        // Ставится, пока схема стоит в мире: снимок блоков лежит в gum-snapshot.yml,
+        // и при падении сервера мы откатим регион по нему на следующем старте.
+        changed |= def("events.gum-machine.state.active", false);
+        changed |= def("events.gum-machine.state.world", "");
         changed |= def("events.region.worldguard-region", "spawn");
         changed |= def("events.region.padding", 8);
         changed |= def("events.region.min-x", 0);
@@ -500,6 +539,17 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         luckDuration         = Math.max(5, cfg.getInt("events.lucky-2x.duration-seconds", 300));
         luckIncludeInAuto    = cfg.getBoolean("events.lucky-2x.include-in-auto", false);
         luckMultiplier       = Math.max(1.0, Math.min(10.0, cfg.getDouble("events.lucky-2x.multiplier", 2.0)));
+        gumEnabled           = cfg.getBoolean("events.gum-machine.enabled", true);
+        gumDuration          = Math.max(5, cfg.getInt("events.gum-machine.duration-seconds", 300));
+        gumIncludeInAuto     = cfg.getBoolean("events.gum-machine.include-in-auto", false);
+        gumSchematic         = cfg.getString("events.gum-machine.schematic", "gumbubble");
+        gumPos1              = cfg.getString("events.gum-machine.region.pos1", "-44 54 68");
+        gumPos2              = cfg.getString("events.gum-machine.region.pos2", "-40 47 62");
+        gumTrigger           = cfg.getString("events.gum-machine.trigger", "-42 46 65");
+        gumTopY              = cfg.getDouble("events.gum-machine.top-y", 53);
+        gumChance            = Math.max(0.0, Math.min(100.0, cfg.getDouble("events.gum-machine.chance-percent", 10)));
+        gumHoldMinSeconds    = Math.max(0.5, cfg.getDouble("events.gum-machine.hold-seconds-min", 4.0));
+        gumHoldMaxSeconds    = Math.max(gumHoldMinSeconds, cfg.getDouble("events.gum-machine.hold-seconds-max", 5.0));
         regionName           = cfg.getString("events.region.worldguard-region", "spawn");
         regionPadding        = Math.max(0, cfg.getDouble("events.region.padding", 8));
         manualMinX           = cfg.getDouble("events.region.min-x", 0);
@@ -623,11 +673,27 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (feedback != null) feedback.sendMessage("§cИвент «2x Удача» отключён в конфиге.");
             return false;
         }
+        if (type == EventType.GUM_MACHINE) {
+            if (!gumEnabled) {
+                if (feedback != null) feedback.sendMessage("§cИвент «Бабл Гам Машина» отключён в конфиге.");
+                return false;
+            }
+            // Схема вставляется асинхронно, а откат идёт по снимку блоков. Второй
+            // запуск в этот момент снял бы снимок уже с самой машины.
+            if (gumBusy) {
+                if (feedback != null) feedback.sendMessage("§eМашина ещё ставится или разбирается, подожди пару секунд.");
+                return false;
+            }
+        }
         if (isActive(type)) {
             if (type == EventType.THREE_ROADS) {
                 // Карта уже перестроена. Разбирать её и строить заново — это две лишние
                 // вставки схемы подряд, поэтому просто заменяем сессию: тропы и бетон
                 // остаются на месте, у ивента обновляется только таймер и босс-бар.
+                dropSessionKeepingMap(type);
+            } else if (type == EventType.GUM_MACHINE) {
+                // Машина уже стоит и снимок блоков снят — второй разбор/вставка только
+                // испортили бы снимок. Продлеваем ивент, мир не трогаем.
                 dropSessionKeepingMap(type);
             } else {
                 // Тот же ивент запускают повторно — перезапускаем именно его, остальные не трогаем.
@@ -647,6 +713,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 case CREEPER_PARTY -> creeperDuration;
                 case THREE_ROADS -> roadsDuration;
                 case LUCKY_2X -> luckDuration;
+                case GUM_MACHINE -> gumDuration;
             };
         }
 
@@ -667,6 +734,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 case CREEPER_PARTY -> Sound.ENTITY_CREEPER_PRIMED;
                 case THREE_ROADS -> Sound.ENTITY_PLAYER_LEVELUP;
                 case LUCKY_2X -> Sound.ENTITY_PLAYER_LEVELUP;
+                case GUM_MACHINE -> Sound.ENTITY_SLIME_SQUISH;
             }, 0.7f, 0.8f);
         }
 
@@ -682,6 +750,11 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 else getLogger().info("3 Тропы: карта уже открыта, продлеваю ивент до " + seconds + "с.");
             }
             case LUCKY_2X -> startLucky2x(session);
+            case GUM_MACHINE -> {
+                // Машина уже в мире (ивент просто продлили) — второй раз не ставим.
+                if (!isGumMachineUp()) startGumMachine(session);
+                else getLogger().info("Бабл Гам Машина: уже стоит, продлеваю ивент до " + seconds + "с.");
+            }
         }
 
         getLogger().info("Ивент " + type.title + " запущен на " + seconds + "с в мире " + world.getName()
@@ -796,6 +869,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             case CREEPER_PARTY -> clearCreeperParty();
             case THREE_ROADS -> teardownThreeRoads(s.world);
             case LUCKY_2X -> stopLucky2x();
+            case GUM_MACHINE -> teardownGumMachine(s.world);
         }
 
         if (sessions.isEmpty() && barTask != null) {
@@ -832,6 +906,11 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 // Включается events.lucky-2x.include-in-auto.
                 if (luckEnabled && luckIncludeInAuto && !isActive(EventType.LUCKY_2X)) {
                     pool.add(EventType.LUCKY_2X);
+                }
+                // Машина тоже вне ротации: она меняет карту, как и тропы.
+                // Включается events.gum-machine.include-in-auto.
+                if (gumEnabled && gumIncludeInAuto && !gumBusy && !isActive(EventType.GUM_MACHINE)) {
+                    pool.add(EventType.GUM_MACHINE);
                 }
                 if (pool.isEmpty()) return;
                 startEvent(pool.get(random.nextInt(pool.size())), 0, null);
@@ -1669,6 +1748,282 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     }
 
     // =========================================================
+    // ИВЕНТ 6: БАБЛ ГАМ МАШИНА
+    // =========================================================
+    /*
+     * Машина — это схема над конвейером плюс переключатель в спавнере. Сам лифт
+     * живёт в спавнере: он телепортирует мобов каждый тик, поэтому поднять моба
+     * снаружи невозможно. Здесь только: снимок блоков -> вставка схемы -> включить
+     * спавнер; на выходе — выключить спавнер и вернуть блоки по снимку.
+     *
+     * Откат делаем не второй схемой, а точным снимком: регион маленький (пара сотен
+     * блоков), зато возвращается ровно то, что было, включая случайную застройку.
+     */
+    private World gumPendingTeardown;
+
+    private boolean isGumMachineUp() {
+        return gumSnapshotFile().exists() || getConfig().getBoolean("events.gum-machine.state.active", false);
+    }
+
+    private File gumSnapshotFile() {
+        return new File(getDataFolder(), GUM_SNAPSHOT_FILE);
+    }
+
+    private void startGumMachine(EventSession session) {
+        final World world = session.world;
+        if (world == null) return;
+        gumBusy = true;
+        if (!saveGumSnapshot(world)) {
+            // Без снимка вставлять нельзя: схему потом нечем будет убрать.
+            gumBusy = false;
+            getLogger().severe("Бабл Гам Машина: снимок региона не снят, ивент отменяю.");
+            stopEvent(EventType.GUM_MACHINE, true);
+            return;
+        }
+        markGumState(true, world.getName());
+        getLogger().info("Бабл Гам Машина: ставлю схему " + gumSchematic + ".");
+        pasteGumSchematic(world, () -> {
+            gumBusy = false;
+            if (gumPendingTeardown != null) { runPendingGumTeardown(); return; }
+            if (!isActive(EventType.GUM_MACHINE)) { restoreGumRegion(world); return; }
+            if (!setSpawnerGumMachine(world)) {
+                getLogger().warning("Бабл Гам Машина: спавнер не отозвался — пузырь работать не будет "
+                        + "(нет BrainrotSpawner или он старой версии).");
+            }
+            for (Player p : world.getPlayers()) {
+                p.sendMessage("§d§l✦ Бабл Гам Машина заработала! §7Мобы залипают в пузыре и выходят «Баблгамовыми».");
+                try { p.playSound(p.getLocation(), Sound.BLOCK_HONEY_BLOCK_PLACE, 0.9f, 1.3f); }
+                catch (Throwable ignored) {}
+            }
+        });
+    }
+
+    private void teardownGumMachine(World world) {
+        clearSpawnerGumMachine();
+        if (gumBusy) {
+            // Вставку схемы отменить нельзя — разберём сразу, как она закончится.
+            gumPendingTeardown = (world != null ? world : anyEventWorld());
+            getLogger().info("Бабл Гам Машина: разбор отложен до конца вставки схемы.");
+            return;
+        }
+        restoreGumRegion(world);
+    }
+
+    private void runPendingGumTeardown() {
+        if (gumPendingTeardown == null || gumBusy) return;
+        World w = gumPendingTeardown;
+        gumPendingTeardown = null;
+        restoreGumRegion(w);
+    }
+
+    /** Границы региона машины в блоках: minX,minY,minZ,maxX,maxY,maxZ. */
+    private int[] gumRegionBox(World world) {
+        Location l1 = parseRoadsPoint(world, gumPos1);
+        Location l2 = parseRoadsPoint(world, gumPos2);
+        if (l1 == null || l2 == null) {
+            getLogger().warning("Бабл Гам Машина: не заданы координаты региона (events.gum-machine.region.pos1/pos2).");
+            return null;
+        }
+        return new int[]{
+                Math.min(l1.getBlockX(), l2.getBlockX()), Math.min(l1.getBlockY(), l2.getBlockY()),
+                Math.min(l1.getBlockZ(), l2.getBlockZ()), Math.max(l1.getBlockX(), l2.getBlockX()),
+                Math.max(l1.getBlockY(), l2.getBlockY()), Math.max(l1.getBlockZ(), l2.getBlockZ())
+        };
+    }
+
+    /** Снимок региона в gum-snapshot.yml. Пишется до вставки схемы. */
+    private boolean saveGumSnapshot(World world) {
+        int[] box = gumRegionBox(world);
+        if (box == null) return false;
+        List<String> rows = new ArrayList<>();
+        for (int x = box[0]; x <= box[3]; x++) {
+            for (int y = box[1]; y <= box[4]; y++) {
+                for (int z = box[2]; z <= box[5]; z++) {
+                    try {
+                        Block b = world.getBlockAt(x, y, z);
+                        rows.add(x + ";" + y + ";" + z + ";" + b.getBlockData().getAsString());
+                    } catch (Throwable ignored) {}
+                }
+            }
+        }
+        YamlConfiguration snap = new YamlConfiguration();
+        snap.set("world", world.getName());
+        snap.set("blocks", rows);
+        try {
+            File dir = getDataFolder();
+            if (!dir.exists() && !dir.mkdirs()) getLogger().warning("Бабл Гам Машина: не создал папку плагина.");
+            snap.save(gumSnapshotFile());
+        } catch (Throwable t) {
+            getLogger().severe("Бабл Гам Машина: не смог сохранить снимок региона: " + t);
+            return false;
+        }
+        getLogger().info("Бабл Гам Машина: снимок региона снят (" + rows.size() + " блоков).");
+        return true;
+    }
+
+    /** Точный откат по снимку. Снимок удаляется только после успешной раскладки. */
+    private void restoreGumRegion(World world) {
+        File file = gumSnapshotFile();
+        if (!file.exists()) {
+            getLogger().warning("Бабл Гам Машина: снимка нет, откатывать нечего.");
+            markGumState(false, "");
+            return;
+        }
+        YamlConfiguration snap = YamlConfiguration.loadConfiguration(file);
+        World target = world;
+        String wn = snap.getString("world", "");
+        if (wn != null && !wn.isEmpty()) {
+            World fromSnap = Bukkit.getWorld(wn);
+            if (fromSnap != null) target = fromSnap;
+        }
+        if (target == null) {
+            getLogger().warning("Бабл Гам Машина: мир снимка не найден, откат невозможен. Проверь регион руками.");
+            return;
+        }
+        final World finalWorld = target;
+        int restored = 0, failed = 0;
+        for (String row : snap.getStringList("blocks")) {
+            String[] parts = row.split(";", 4);
+            if (parts.length < 4) { failed++; continue; }
+            try {
+                int x = Integer.parseInt(parts[0]);
+                int y = Integer.parseInt(parts[1]);
+                int z = Integer.parseInt(parts[2]);
+                finalWorld.getBlockAt(x, y, z).setBlockData(Bukkit.createBlockData(parts[3]), false);
+                restored++;
+            } catch (Throwable t) {
+                failed++;
+            }
+        }
+        if (failed > 0) getLogger().warning("Бабл Гам Машина: не вернул " + failed + " блоков из снимка.");
+        getLogger().info("Бабл Гам Машина: регион возвращён (" + restored + " блоков).");
+        try { if (!file.delete()) getLogger().warning("Бабл Гам Машина: снимок не удалился, удали " + GUM_SNAPSHOT_FILE + " руками."); }
+        catch (Throwable ignored) {}
+        markGumState(false, "");
+        runPendingGumTeardown();
+    }
+
+    /** Флаг «схема сейчас в мире» — страховка на случай падения сервера. */
+    private void markGumState(boolean active, String worldName) {
+        try {
+            getConfig().set("events.gum-machine.state.active", active);
+            getConfig().set("events.gum-machine.state.world", worldName == null ? "" : worldName);
+            saveConfig();
+        } catch (Throwable t) {
+            getLogger().warning("Бабл Гам Машина: не удалось сохранить состояние: " + t.getMessage());
+        }
+    }
+
+    /** Вызывается на onEnable: снимок на диске означает незакрытый прошлый запуск. */
+    private void restoreGumAfterCrash() {
+        if (!isGumMachineUp()) return;
+        getLogger().warning("Бабл Гам Машина: прошлый ивент не был закрыт (перезапуск сервера?) — откатываю регион.");
+        String wn = getConfig().getString("events.gum-machine.state.world", "");
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            World w = (wn == null || wn.isEmpty()) ? null : Bukkit.getWorld(wn);
+            if (w == null) w = resolveWorld();
+            restoreGumRegion(w);
+        }, 100L);
+    }
+
+    /** Вставка схемы машины — тот же путь, что у «3 Троп», но по своему региону. */
+    private void pasteGumSchematic(World world, Runnable afterMain) {
+        final Runnable done = afterMain;
+        int[] box = gumRegionBox(world);
+        if (box == null) { if (done != null) done.run(); return; }
+        final int minX = box[0], minY = box[1], minZ = box[2];
+        final File file = resolveSchematicFile(gumSchematic);
+        if (file == null || !file.exists()) {
+            getLogger().severe("Бабл Гам Машина: схема '" + gumSchematic + "' не найдена. Положи её в "
+                    + "plugins/BrainrotEvents/schematics/ или в папку схем WorldEdit/FAWE.");
+            if (done != null) done.run();
+            return;
+        }
+        try {
+            Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                try {
+                    ClipboardFormat format = ClipboardFormats.findByFile(file);
+                    if (format == null) {
+                        getLogger().warning("Бабл Гам Машина: неизвестный формат схемы " + file.getName());
+                    } else {
+                        Clipboard clipboard;
+                        try (java.io.FileInputStream fis = new java.io.FileInputStream(file);
+                             ClipboardReader reader = format.getReader(fis)) {
+                            clipboard = reader.read();
+                        }
+                        clipboard.setOrigin(clipboard.getRegion().getMinimumPoint());
+                        com.sk89q.worldedit.world.World weWorld = BukkitAdapter.adapt(world);
+                        try (EditSession editSession = WorldEdit.getInstance().newEditSessionBuilder().world(weWorld).build()) {
+                            Operation operation = new ClipboardHolder(clipboard)
+                                    .createPaste(editSession)
+                                    .to(BlockVector3.at(minX, minY, minZ))
+                                    .ignoreAirBlocks(false)
+                                    .build();
+                            Operations.complete(operation);
+                        }
+                        getLogger().info("Бабл Гам Машина: схема вставлена в " + minX + "," + minY + "," + minZ);
+                    }
+                } catch (Throwable t) {
+                    getLogger().severe("Бабл Гам Машина: ошибка вставки схемы: " + t);
+                }
+                if (done != null) {
+                    try { Bukkit.getScheduler().runTask(this, done); } catch (Throwable ignored) {}
+                }
+            });
+        } catch (Throwable t) {
+            getLogger().warning("Бабл Гам Машина: не смог запустить вставку схемы: " + t.getMessage());
+            if (done != null) done.run();
+        }
+    }
+
+    /** Включает лифт в спавнере. Точка триггера, верх пузыря, шанс и время висения — из конфига. */
+    private boolean setSpawnerGumMachine(World world) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return false;
+        Location trigger = parseRoadsPoint(world, gumTrigger);
+        if (trigger == null) {
+            getLogger().warning("Бабл Гам Машина: не разобрал events.gum-machine.trigger.");
+            return false;
+        }
+        int holdMin = (int) Math.round(gumHoldMinSeconds * 20.0);
+        int holdMax = (int) Math.round(gumHoldMaxSeconds * 20.0);
+        try {
+            Object res = spawner.getClass().getMethod("setGumMachine", String.class, double.class, double.class,
+                            double.class, double.class, double.class, int.class, int.class)
+                    .invoke(spawner, world.getName(), trigger.getX(), trigger.getY(), trigger.getZ(),
+                            gumTopY, gumChance, holdMin, holdMax);
+            return !(res instanceof Boolean b) || b;
+        } catch (NoSuchMethodException ex) {
+            getLogger().warning("Бабл Гам Машина: в установленном BrainrotSpawner нет setGumMachine — обнови спавнер.");
+            return false;
+        } catch (Throwable t) {
+            getLogger().warning("Бабл Гам Машина: не удалось включить лифт: " + t);
+            return false;
+        }
+    }
+
+    private void clearSpawnerGumMachine() {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return;
+        try {
+            spawner.getClass().getMethod("clearGumMachine").invoke(spawner);
+        } catch (Throwable t) {
+            getLogger().warning("Бабл Гам Машина: не удалось выключить лифт: " + t);
+        }
+    }
+
+    /** Что об этом думает сам спавнер — для /brevent status. */
+    private boolean isSpawnerGumActive() {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return false;
+        try {
+            Object res = spawner.getClass().getMethod("isGumMachineActive").invoke(spawner);
+            return res instanceof Boolean b && b;
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
+    // =========================================================
     // РЕГИОН (WorldGuard -> конвейеры -> ручной бокс)
     // =========================================================
     private double[] getRegionBounds(World world) {
@@ -2063,15 +2418,15 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 return true;
             }
             if (args.length == 0) {
-                sender.sendMessage("§6/" + label + " start <badweather|meteor|creeper|3road|2x> [секунды] §7— можно запускать несколько сразу");
-                sender.sendMessage("§6/" + label + " stop [badweather|meteor|creeper|3road|2x] §7— остановить один или все");
+                sender.sendMessage("§6/" + label + " start <badweather|meteor|creeper|3road|2x|gum> [секунды] §7— можно запускать несколько сразу");
+                sender.sendMessage("§6/" + label + " stop [badweather|meteor|creeper|3road|2x|gum] §7— остановить один или все");
                 sender.sendMessage("§6/" + label + " status §7— что сейчас идёт");
                 sender.sendMessage("§6/" + label + " reload §7— перечитать конфиг");
                 return true;
             }
             switch (args[0].toLowerCase(Locale.ROOT)) {
                 case "start" -> {
-                    if (args.length < 2) { sender.sendMessage("§cУкажи ивент: badweather, meteor, creeper, 3road или 2x."); return true; }
+                    if (args.length < 2) { sender.sendMessage("§cУкажи ивент: badweather, meteor, creeper, 3road, 2x или gum."); return true; }
                     EventType type = EventType.byKey(args[1]);
                     if (type == null) { sender.sendMessage("§cНеизвестный ивент: " + args[1]); return true; }
                     int seconds = 0;
@@ -2131,6 +2486,15 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                                     + " §7| перестройка: " + (roadsBusy ? "§eидёт" : "§aзакончена")
                                     + " §7| схемы: §f" + roadsSchemOpen + " §7/ §f" + roadsSchemClose);
                         }
+                        if (s.type == EventType.GUM_MACHINE) {
+                            sender.sendMessage("§7  схема: §f" + gumSchematic
+                                    + " §7| шанс: §f" + trimNumber(gumChance) + "%"
+                                    + " §7| висит: §f" + trimNumber(gumHoldMinSeconds) + "–" + trimNumber(gumHoldMaxSeconds) + "с"
+                                    + " §7| верх Y: §f" + trimNumber(gumTopY));
+                            sender.sendMessage("§7  снимок региона: " + (gumSnapshotFile().exists() ? "§aесть" : "§cнет")
+                                    + " §7| стройка: " + (gumBusy ? "§eидёт" : "§aзакончена")
+                                    + " §7| лифт в спавнере: " + (isSpawnerGumActive() ? "§aвкл" : "§cвыкл"));
+                        }
                     }
                 }
                 case "reload" -> {
@@ -2153,7 +2517,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 return filter(List.of("start", "stop", "status", "reload"), args[0]);
             }
             if (args.length == 2 && (args[0].equalsIgnoreCase("start") || args[0].equalsIgnoreCase("stop"))) {
-                return filter(List.of("badweather", "meteor", "creeper", "3road", "2x"), args[1]);
+                return filter(List.of("badweather", "meteor", "creeper", "3road", "2x", "gum"), args[1]);
             }
             if (args.length == 3 && args[0].equalsIgnoreCase("start")) {
                 return filter(List.of("60", "120", "180", "300"), args[2]);

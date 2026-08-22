@@ -102,6 +102,68 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private final Map<Entity, BukkitRunnable> movementTasks = new HashMap<>();
     private final Map<Entity, Double> mobHoloHeights = new HashMap<>();
 
+    // ===== Бабл-гам машина (ивент BrainrotEvents) =====
+    // Ивент включает машину через setGumMachine(...) и гасит через clearGumMachine().
+    // Весь лифт живёт внутри задачи движения: она телепортирует моба каждый тик,
+    // поэтому «поднять» его снаружи невозможно — только отсюда.
+    private static final String GUM_ROLLED_TAG = "GUM_MACHINE_ROLLED";
+    private volatile boolean gumMachineActive = false;
+    private volatile String gumMachineWorld = null;
+    private volatile double gumTriggerX = 0.0;
+    private volatile double gumTriggerY = 0.0;
+    private volatile double gumTriggerZ = 0.0;
+    private volatile double gumTopY = 0.0;
+    private volatile double gumChancePercent = 10.0;
+    private volatile int gumHoldTicksMin = 80;
+    private volatile int gumHoldTicksMax = 100;
+    private final Map<Entity, GumLift> gumLifts = new HashMap<>();
+
+    /** Состояние одного моба в пузыре: вверх → висит → вниз. */
+    private static final class GumLift {
+        private final double maxOffset;
+        private final double riseSpeed;
+        private final double fallSpeed;
+        private int holdTicks;
+        private int phase = 0; // 0 — поднимается, 1 — висит, 2 — падает
+        private double offset = 0.0;
+
+        GumLift(double maxOffset, int holdTicks) {
+            this.maxOffset = Math.max(0.5, maxOffset);
+            this.holdTicks = Math.max(1, holdTicks);
+            // ~1.5 секунды на подъём, падение примерно вдвое быстрее.
+            this.riseSpeed = Math.max(0.05, this.maxOffset / 30.0);
+            this.fallSpeed = Math.max(0.10, this.maxOffset / 16.0);
+        }
+
+        /** @return true, когда моб вернулся на конвейер и лифт можно снимать. */
+        boolean tick() {
+            switch (phase) {
+                case 0 -> {
+                    offset += riseSpeed;
+                    if (offset >= maxOffset) {
+                        offset = maxOffset;
+                        phase = 1;
+                    }
+                }
+                case 1 -> {
+                    if (--holdTicks <= 0) phase = 2;
+                }
+                default -> {
+                    offset -= fallSpeed;
+                    if (offset <= 0.0) {
+                        offset = 0.0;
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        double offset() { return offset; }
+        boolean rising() { return phase == 0; }
+        boolean holding() { return phase == 1; }
+    }
+
     private final Map<Entity, BukkitRunnable> deliveryTasks = new HashMap<>();
     private final Map<Entity, Player> mobBuyers = new HashMap<>();
     private final Map<Entity, Location> deliveryDestinations = new HashMap<>();
@@ -182,7 +244,9 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         SNOWY("Снежный", "§b", 5.0, 0),
         ELECTRIC("Электрический", "§e", 3.0, 0),
         METEOR("Метеоритный", "§c", 4.0, 0),
-        EXPLOSIVE("Взрывной", "§a", 3.5, 0);
+        EXPLOSIVE("Взрывной", "§a", 3.5, 0),
+        // Выдаётся только бабл-гам машиной: моб зависает в пузыре и падает уже с ней.
+        BUBBLEGUM("Баблгамовый", "§d", 4.0, 0);
 
         final String displayName;
         final String format;
@@ -961,9 +1025,10 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
 
     // Мутации, которые стакаются с базовой (выдаются ивентами, а не при спавне).
     private static final List<Mutation> STACKABLE_MUTATIONS =
-            List.of(Mutation.SNOWY, Mutation.ELECTRIC, Mutation.METEOR, Mutation.EXPLOSIVE);
+            List.of(Mutation.SNOWY, Mutation.ELECTRIC, Mutation.METEOR, Mutation.EXPLOSIVE,
+                    Mutation.BUBBLEGUM);
 
-    /** Порядок фиксирован (Снежный, Электрический, Метеоритный, Взрывной) — от него зависит порядок строк нейм-тега. */
+    /** Порядок фиксирован (Снежный, Электрический, Метеоритный, Взрывной, Баблгамовый) — от него зависит порядок строк нейм-тега. */
     private List<Mutation> getExtraMutations(Entity mob) {
         if (mob == null) return List.of();
         Set<String> tags = mob.getScoreboardTags();
@@ -1019,6 +1084,14 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                             new Particle.DustOptions(Color.fromRGB(60, 220, 90), 1.0f));
                 if (tick % 12 == 0)
                     mob.getWorld().spawnParticle(Particle.EXPLOSION, p.clone().add(0, 0.3, 0), 1, 0.15, 0.1, 0.15, 0.0);
+            }
+            case BUBBLEGUM -> {
+                // Розовые липкие капли: тот же цвет, что у пузыря машины.
+                if (tick % 4 == 0)
+                    mob.getWorld().spawnParticle(Particle.DUST, p, 3, 0.28, 0.3, 0.28, 0,
+                            new Particle.DustOptions(Color.fromRGB(255, 105, 180), 1.0f));
+                if (tick % 14 == 0)
+                    mob.getWorld().spawnParticle(Particle.ITEM_SLIME, p.clone().add(0, 0.2, 0), 2, 0.2, 0.15, 0.2, 0.0);
             }
             case RAINBOW -> {
                 if (tick % 2 == 0) {
@@ -1810,11 +1883,28 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 }
                 Vector dirVec = getDirectionVector(direction);
                 double baseY = spawnLoc.getY();
-                traveledDistance += speed;
+                // Бабл-гам машина: пока моб в пузыре, конвейер для него стоит —
+                // traveledDistance не растёт, меняется только высота.
+                GumLift gumLift = gumLifts.get(finalMob);
+                if (gumLift == null && gumMachineActive) {
+                    double curX = initialLoc.getX() + dirVec.getX() * traveledDistance;
+                    double curZ = initialLoc.getZ() + dirVec.getZ() * traveledDistance;
+                    gumLift = tryStartGumLift(finalMob, config.getWorldName(), curX, baseY, curZ);
+                }
+                if (gumLift != null && gumLift.tick()) {
+                    gumLifts.remove(finalMob);
+                    finishGumLift(finalMob);
+                    gumLift = null;
+                }
+                if (gumLift == null) traveledDistance += speed;
                 double newX = initialLoc.getX() + dirVec.getX() * traveledDistance;
                 double newZ = initialLoc.getZ() + dirVec.getZ() * traveledDistance;
                 double newY = baseY;
                 if (isFlightMob(mobData)) newY = calculateFlightHeight(mobData, baseY);
+                if (gumLift != null) {
+                    newY += gumLift.offset();
+                    tickGumLiftEffects(finalMob, gumLift, newX, newY, newZ, tick);
+                }
                 float yaw = getYawFromDirection(direction);
                 // Модель ModelEngine рисуется по yaw подложки, поэтому разворот
                 // блюпринта делаем здесь, а не в геометрии: сама сущность невидима,
@@ -1877,6 +1967,109 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         };
         movementTask.runTaskTimer(this, 1L, 1L);
         movementTasks.put(finalMob, movementTask);
+    }
+
+    /**
+     * Пробует затянуть моба в пузырь. Шанс кидается ровно один раз за жизнь моба:
+     * метка GUM_ROLLED_TAG ставится при первом попадании в зону триггера, иначе
+     * бросок повторялся бы каждый тик и сработал бы почти гарантированно.
+     */
+    private GumLift tryStartGumLift(Entity mob, String worldName, double x, double y, double z) {
+        if (!gumMachineActive || gumMachineWorld == null) return null;
+        if (worldName != null && !gumMachineWorld.equalsIgnoreCase(worldName)) return null;
+        if (mob.getScoreboardTags().contains(GUM_ROLLED_TAG)) return null;
+        if (hasStackableMutation(mob, "BUBBLEGUM")) return null;
+        if (Math.abs(x - gumTriggerX) > 1.2) return null;
+        if (Math.abs(z - gumTriggerZ) > 1.2) return null;
+        if (Math.abs(y - gumTriggerY) > 3.0) return null;
+        mob.addScoreboardTag(GUM_ROLLED_TAG);
+        if (Math.random() * 100.0 >= gumChancePercent) return null;
+        int min = Math.min(gumHoldTicksMin, gumHoldTicksMax);
+        int max = Math.max(gumHoldTicksMin, gumHoldTicksMax);
+        int hold = min + (max > min ? new Random().nextInt(max - min + 1) : 0);
+        GumLift lift = new GumLift(gumTopY - y, hold);
+        gumLifts.put(mob, lift);
+        try {
+            mob.getWorld().playSound(mob.getLocation(), Sound.BLOCK_HONEY_BLOCK_SLIDE, 1.0f, 1.4f);
+        } catch (Throwable ignored) {}
+        return lift;
+    }
+
+    /** Розовый пузырь вокруг моба, пока он поднимается и висит. */
+    private void tickGumLiftEffects(Entity mob, GumLift lift, double x, double y, double z, long tick) {
+        World world = mob.getWorld();
+        Location center = new Location(world, x, y + 0.6, z);
+        if (tick % 2 == 0) {
+            world.spawnParticle(Particle.DUST, center, 6, 0.45, 0.5, 0.45, 0,
+                    new Particle.DustOptions(org.bukkit.Color.fromRGB(255, 105, 180), 1.1f));
+        }
+        if (tick % 6 == 0) {
+            world.spawnParticle(Particle.ITEM_SLIME, center, 3, 0.35, 0.4, 0.35, 0.0);
+        }
+        if (lift.rising() && tick % 8 == 0) {
+            world.playSound(center, Sound.BLOCK_HONEY_BLOCK_SLIDE, 0.5f, 1.6f);
+        }
+        if (lift.holding() && tick % 20 == 0) {
+            world.spawnParticle(Particle.END_ROD, center, 4, 0.4, 0.4, 0.4, 0.0);
+        }
+    }
+
+    /** Пузырь лопнул: моб на конвейере и уже с мутацией «Баблгамовый». */
+    private void finishGumLift(Entity mob) {
+        if (mob == null || !mob.isValid() || mob.isDead()) return;
+        applyStackableMutation(mob, "BUBBLEGUM");
+        World world = mob.getWorld();
+        Location loc = mob.getLocation().add(0, 0.6, 0);
+        try {
+            world.playSound(loc, Sound.ENTITY_SLIME_SQUISH, 1.0f, 1.2f);
+            world.playSound(loc, Sound.BLOCK_HONEY_BLOCK_BREAK, 1.0f, 1.5f);
+        } catch (Throwable ignored) {}
+        world.spawnParticle(Particle.DUST, loc, 40, 0.5, 0.5, 0.5, 0,
+                new Particle.DustOptions(org.bukkit.Color.fromRGB(255, 105, 180), 1.3f));
+        world.spawnParticle(Particle.ITEM_SLIME, loc, 25, 0.45, 0.45, 0.45, 0.0);
+    }
+
+    // ===== Публичный API для BrainrotEvents (вызывается рефлексией) =====
+
+    /**
+     * Включает бабл-гам машину.
+     *
+     * @param worldName    мир, в котором стоит машина
+     * @param topY         высота, до которой поднимается пузырь
+     * @param chancePercent шанс срабатывания в процентах
+     * @param holdTicksMin/holdTicksMax сколько тиков моб висит наверху
+     */
+    public boolean setGumMachine(String worldName, double triggerX, double triggerY, double triggerZ,
+                                 double topY, double chancePercent, int holdTicksMin, int holdTicksMax) {
+        if (worldName == null || worldName.isEmpty()) return false;
+        gumMachineWorld = worldName;
+        gumTriggerX = triggerX;
+        gumTriggerY = triggerY;
+        gumTriggerZ = triggerZ;
+        gumTopY = topY;
+        gumChancePercent = Math.max(0.0, Math.min(100.0, chancePercent));
+        gumHoldTicksMin = Math.max(1, holdTicksMin);
+        gumHoldTicksMax = Math.max(gumHoldTicksMin, holdTicksMax);
+        gumMachineActive = true;
+        getLogger().info("[GUM] Бабл-гам машина включена: " + worldName + " триггер "
+                + triggerX + "/" + triggerY + "/" + triggerZ + " верх Y=" + topY
+                + " шанс " + gumChancePercent + "%");
+        return true;
+    }
+
+    /** Гасит машину и опускает всех, кто ещё висит (лифт снимается — моб продолжит путь). */
+    public void clearGumMachine() {
+        gumMachineActive = false;
+        gumMachineWorld = null;
+        gumLifts.clear();
+        for (Entity mob : new ArrayList<>(mobDataMap.keySet())) {
+            try { mob.removeScoreboardTag(GUM_ROLLED_TAG); } catch (Throwable ignored) {}
+        }
+        getLogger().info("[GUM] Бабл-гам машина выключена");
+    }
+
+    public boolean isGumMachineActive() {
+        return gumMachineActive;
     }
 
     private double calculateFlightHeight(MobData data, double baseHeight) {
@@ -1944,6 +2137,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             mobClickCooldown.remove(mob);
             mobDataMap.remove(mob);
             mobExtrasCache.remove(mob);
+            gumLifts.remove(mob);
             if (mob.getScoreboardTags().contains("ROT_WALKER_ANIMATED") || mob.getScoreboardTags().contains(ROT_WALKER_ROOT_TAG)) {
                 String uniq = getRotWalkerUniqTag(mob);
                 String dim = mob.getWorld().getKey().toString();

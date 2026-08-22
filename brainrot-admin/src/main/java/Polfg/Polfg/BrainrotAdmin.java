@@ -27,6 +27,18 @@ import java.util.*;
 import java.util.Date;
 
 public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecutor {
+
+    /**
+     * Ник игрока в виде ключа конфига — точь-в-точь как в BrainrotBases.cfgKey.
+     *
+     * Точка в нике (Bedrock через Floodgate: ".Nick") в Bukkit-конфигах означает
+     * разделитель пути, поэтому mobs.yml пишется и читается с '%' вместо точки.
+     * Если здесь не экранировать так же, админ-GUI будет править чужую (пустую)
+     * секцию, а мобы Bedrock-игрока опять «пропадут».
+     */
+    private static String cfgKey(String playerName) {
+        return playerName == null ? null : playerName.replace('.', '%');
+    }
     @Override
     public void onDisable() {
         // __leakfix__
@@ -127,7 +139,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
             String group = (chat != null) ? chat.getPrimaryGroup(null, target) : "N/A";
             
             List<String> alts = new ArrayList<>();
-            String ip = playersConfig.getString("players." + targetName.toLowerCase());
+            String ip = playersConfig.getString("players." + cfgKey(targetName.toLowerCase()));
             if (target.isOnline() && target.getPlayer() != null && target.getPlayer().getAddress() != null) ip = target.getPlayer().getAddress().getAddress().getHostAddress();
             
             if (ip != null) {
@@ -243,7 +255,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
             return;
         }
         YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
-        ConfigurationSection sec = cfg.getConfigurationSection("mobs." + target.getName());
+        ConfigurationSection sec = cfg.getConfigurationSection("mobs." + cfgKey(target.getName()));
 
         if (sec != null) {
             int slot = 36;
@@ -355,7 +367,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
             }
             if (e.getSlot() == 14) { modifyMob(admin, targetName, mobIndex, "TOGGLE_LB", null); }
             // Все мутации — тумблеры: клик по включённой снимает её. После клика остаёмся в редакторе.
-            if (e.getSlot() == 13 || (e.getSlot() >= 15 && e.getSlot() <= 21) || e.getSlot() == 23) {
+            if (e.getSlot() == 13 || (e.getSlot() >= 15 && e.getSlot() <= 21) || e.getSlot() == 23 || e.getSlot() == 24) {
                 switch (e.getSlot()) {
                     case 13 -> modifyMob(admin, targetName, mobIndex, "CLEAR_MUTATION", null);
                     case 15 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_BASE", "GOLD");
@@ -365,6 +377,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
                     case 20 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_EXTRA", "ELECTRIC");
                     case 21 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_EXTRA", "METEOR");
                     case 23 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_EXTRA", "EXPLOSIVE");
+                    case 24 -> modifyMob(admin, targetName, mobIndex, "TOGGLE_EXTRA", "BUBBLEGUM");
                     default -> { }
                 }
                 Bukkit.getScheduler().runTaskLater(this, () -> openMobEditMenu(admin, mobIndex), 15L);
@@ -396,12 +409,12 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
         String targetName = editingMobTarget.get(admin.getUniqueId());
         File f = basesFile("mobs.yml");
         YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
-        String type = cfg.getString("mobs." + targetName + "." + index + ".mobType", "CHICKEN");
+        String type = cfg.getString("mobs." + cfgKey(targetName) + "." + index + ".mobType", "CHICKEN");
         
         Inventory inv = Bukkit.createInventory(null, 27, "§8Редактор моба (" + index + ")");
-        String curMut = cfg.getString("mobs." + targetName + "." + index + ".mutation", "NONE");
+        String curMut = cfg.getString("mobs." + cfgKey(targetName) + "." + index + ".mutation", "NONE");
         if (curMut == null || curMut.isEmpty()) curMut = "NONE";
-        boolean curSnowy = cfg.getBoolean("mobs." + targetName + "." + index + ".snowy", false);
+        boolean curSnowy = cfg.getBoolean("mobs." + cfgKey(targetName) + "." + index + ".snowy", false);
         List<String> curExtras = extrasOf(curMut);
         String curBase = baseOf(curMut);
         inv.setItem(11, createItem(Material.REDSTONE_BLOCK, "§cУдалить моба"));
@@ -430,10 +443,13 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
         inv.setItem(23, createItem(Material.TNT, "§aВзрывной §7(×3.5)",
                 "§7Сейчас: " + (curExtras.contains("EXPLOSIVE") ? "§aвключён" : "§cвыключен"),
                 "§eКлик — вкл/выкл"));
+        inv.setItem(24, createItem(Material.PINK_DYE, "§dБаблгамовый §7(×4)",
+                "§7Сейчас: " + (curExtras.contains("BUBBLEGUM") ? "§aвключён" : "§cвыключен"),
+                "§eКлик — вкл/выкл"));
 
         if (type.equals("SPONGE")) {
-            boolean isReady = cfg.getBoolean("mobs." + targetName + "." + index + ".luckyBlockReady", false);
-            long lbTimer = cfg.getLong("mobs." + targetName + "." + index + ".luckyBlockTimer", 0L);
+            boolean isReady = cfg.getBoolean("mobs." + cfgKey(targetName) + "." + index + ".luckyBlockReady", false);
+            long lbTimer = cfg.getLong("mobs." + cfgKey(targetName) + "." + index + ".luckyBlockTimer", 0L);
             inv.setItem(14, createItem(Material.CLOCK, "§eСостояние Лаки-Блока",
                 "§7Сейчас: " + (isReady ? "§aГОТОВ" : "§cТАЙМЕР"),
                 "§eНажмите, чтобы переключить"
@@ -508,7 +524,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
             forceSavePlayerMobs(targetName);
             File f = basesFile("mobs.yml");
             YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
-            String path = "mobs." + targetName + "." + index;
+            String path = "mobs." + cfgKey(targetName) + "." + index;
             if (cfg.contains(path)) {
                 boolean current = cfg.getBoolean(path + ".luckyBlockReady");
                 if (current) {
@@ -581,14 +597,14 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
     }
 
     /** Стакающиеся мутации, которые можно навесить поверх базовой. */
-    private static final List<String> STACKABLE_MUTATIONS = Arrays.asList("ELECTRIC", "METEOR", "EXPLOSIVE");
+    private static final List<String> STACKABLE_MUTATIONS = Arrays.asList("ELECTRIC", "METEOR", "EXPLOSIVE", "BUBBLEGUM");
 
     /** Возвращает [строка мутаций, snowy] текущего моба из mobs.yml. */
     private String[] readMobMutation(String targetName, int index) {
         forceSavePlayerMobs(targetName);
         File f = basesFile("mobs.yml");
         YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
-        String path = "mobs." + targetName + "." + index;
+        String path = "mobs." + cfgKey(targetName) + "." + index;
         String mut = cfg.getString(path + ".mutation", "NONE");
         if (mut == null || mut.isEmpty()) mut = "NONE";
         boolean snowy = cfg.getBoolean(path + ".snowy", false);
@@ -602,7 +618,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
     private boolean setLuckyBlockReadyInFile(String targetName, int index) {
         File f = basesFile("mobs.yml");
         YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
-        String path = "mobs." + targetName + "." + index;
+        String path = "mobs." + cfgKey(targetName) + "." + index;
         if (!cfg.contains(path)) return false;
         if (!"SPONGE".equals(cfg.getString(path + ".mobType", ""))) return false;
         cfg.set(path + ".luckyBlockReady", true);
@@ -871,7 +887,7 @@ public class BrainrotAdmin extends JavaPlugin implements Listener, CommandExecut
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
         String ip = e.getPlayer().getAddress().getAddress().getHostAddress();
-        playersConfig.set("players." + e.getPlayer().getName().toLowerCase(), ip);
+        playersConfig.set("players." + cfgKey(e.getPlayer().getName().toLowerCase()), ip);
         List<String> list = playersConfig.getStringList("ips." + ip.replace(".", "_"));
         if (!list.contains(e.getPlayer().getName())) {
             list.add(e.getPlayer().getName());

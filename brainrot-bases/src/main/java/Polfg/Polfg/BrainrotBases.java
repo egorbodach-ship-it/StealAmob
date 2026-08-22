@@ -356,6 +356,9 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         getLogger().info("Очистка завершена. Загружаем конфигурацию...");
         loadBases();
         cleanUpSavedMobs();
+        // Сначала вытаскиваем мобов Bedrock-игроков из битой секции с пустым
+        // ключом, потом уже читаем — иначе загрузка их снова не увидит.
+        repairBedrockMobKeys();
         loadMobsFromConfig();
         // [FIX restart] Reconcile stage2 terrain on startup. After a restart the
         // world still holds the previously pasted upgrade schematic, while state is
@@ -1365,7 +1368,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             getLogger().warning("База " + base + " не имеет точек спавна");
             return;
         }
-        mobsConfig.set("mobs." + playerName, null);
+        mobsConfig.set("mobs." + cfgKey(playerName), null);
         int savedCount = 0;
         for (Map.Entry<Entity, String> entry : entityToPointMap.entrySet()) {
             Entity mob = entry.getKey();
@@ -1389,7 +1392,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                     collectorPoint = parts[1];
                 }
             }
-            String path = "mobs." + playerName + "." + savedCount;
+            String path = "mobs." + cfgKey(playerName) + "." + savedCount;
             mobsConfig.set(path + ".base", base);
             mobsConfig.set(path + ".mobPoint", mobPoint);
             mobsConfig.set(path + ".mobType", type.name());
@@ -3074,8 +3077,10 @@ public class BrainrotBases extends JavaPlugin implements Listener {
      var section = friendsConfig.getConfigurationSection("friends");
      if (section == null) return;
      int totalLoaded = 0;
-     for (String playerName : section.getKeys(false)) {
-         List<String> friendsList = friendsConfig.getStringList("friends." + playerName);
+     for (String sectionKey : section.getKeys(false)) {
+         if (sectionKey.isEmpty()) continue; // след старой склейки путей, см. cfgKey
+         String playerName = cfgKeyToName(sectionKey);
+         List<String> friendsList = friendsConfig.getStringList("friends." + sectionKey);
          if (friendsList != null && !friendsList.isEmpty()) {
              playerFriends.put(playerName, new HashSet<>(friendsList));
              totalLoaded += friendsList.size();
@@ -3144,7 +3149,7 @@ private void migrateRebirthsFromConfig() {
          String playerName = entry.getKey();
          Set<String> friends = entry.getValue();
          if (friends != null && !friends.isEmpty()) {
-             friendsConfig.set("friends." + playerName, new ArrayList<>(friends));
+             friendsConfig.set("friends." + cfgKey(playerName), new ArrayList<>(friends));
          }
      }
      try {
@@ -4236,19 +4241,23 @@ private boolean isBaseMob(Entity entity) {
             return;
         }
         int totalLoaded = 0;
-        for (String playerName : mobsConfig.getConfigurationSection("mobs").getKeys(false)) {
+        for (String sectionKey : mobsConfig.getConfigurationSection("mobs").getKeys(false)) {
+            // Пустой ключ — след старой склейки путей (см. cfgKey). Его разбирает
+            // repairBedrockMobKeys() до этого места; если что-то осталось, молча мимо.
+            if (sectionKey.isEmpty()) continue;
+            String playerName = cfgKeyToName(sectionKey);
             List<SavedMobData> mobs = new ArrayList<>();
-            ConfigurationSection playerSection = mobsConfig.getConfigurationSection("mobs." + playerName);
+            ConfigurationSection playerSection = mobsConfig.getConfigurationSection("mobs." + cfgKey(playerName));
             if (playerSection == null) continue;
             for (String index : playerSection.getKeys(false)) {
-                String base = mobsConfig.getString("mobs." + playerName + "." + index + ".base");
-                String mobPoint = mobsConfig.getString("mobs." + playerName + "." + index + ".mobPoint");
-                String collectorPoint = mobsConfig.getString("mobs." + playerName + "." + index + ".collectorPoint");
-                String mobTypeName = mobsConfig.getString("mobs." + playerName + "." + index + ".mobType");
-                long lbTimer = mobsConfig.getLong("mobs." + playerName + "." + index + ".luckyBlockTimer", -1L);
-                boolean lbReady = mobsConfig.getBoolean("mobs." + playerName + "." + index + ".luckyBlockReady", false);
-                String mutationName = mobsConfig.getString("mobs." + playerName + "." + index + ".mutation", "NONE");
-                boolean snowyMob = mobsConfig.getBoolean("mobs." + playerName + "." + index + ".snowy", false);
+                String base = mobsConfig.getString("mobs." + cfgKey(playerName) + "." + index + ".base");
+                String mobPoint = mobsConfig.getString("mobs." + cfgKey(playerName) + "." + index + ".mobPoint");
+                String collectorPoint = mobsConfig.getString("mobs." + cfgKey(playerName) + "." + index + ".collectorPoint");
+                String mobTypeName = mobsConfig.getString("mobs." + cfgKey(playerName) + "." + index + ".mobType");
+                long lbTimer = mobsConfig.getLong("mobs." + cfgKey(playerName) + "." + index + ".luckyBlockTimer", -1L);
+                boolean lbReady = mobsConfig.getBoolean("mobs." + cfgKey(playerName) + "." + index + ".luckyBlockReady", false);
+                String mutationName = mobsConfig.getString("mobs." + cfgKey(playerName) + "." + index + ".mutation", "NONE");
+                boolean snowyMob = mobsConfig.getBoolean("mobs." + cfgKey(playerName) + "." + index + ".snowy", false);
                 if (base == null || mobPoint == null || mobTypeName == null) {
                     getLogger().warning("Неполные данные моба для игрока " + playerName + ", индекс " + index);
                     continue;
@@ -4279,7 +4288,7 @@ private boolean isBaseMob(Entity entity) {
             if (mobs == null || mobs.isEmpty()) continue;
             for (int i = 0; i < mobs.size(); i++) {
                 SavedMobData mob = mobs.get(i);
-                String path = "mobs." + playerName + "." + i;
+                String path = "mobs." + cfgKey(playerName) + "." + i;
                 mobsConfig.set(path + ".base", mob.base);
                 mobsConfig.set(path + ".mobPoint", mob.mobPoint);
                 mobsConfig.set(path + ".collectorPoint", mob.collectorPoint);
@@ -4482,7 +4491,7 @@ private boolean isBaseMob(Entity entity) {
         );
         mobs.set(index, newData);
         savedPlayerMobs.put(playerName, mobs);
-        String path = "mobs." + playerName + "." + index;
+        String path = "mobs." + cfgKey(playerName) + "." + index;
         mobsConfig.set(path + ".mutation", mutationName);
         mobsConfig.set(path + ".snowy", snowy);
         try { saveConfigAsync(mobsConfig, mobsFile); } catch (IOException e) {}
@@ -4532,7 +4541,7 @@ private boolean isBaseMob(Entity entity) {
         );
         mobs.set(index, newData);
         savedPlayerMobs.put(playerName, mobs);
-        String path = "mobs." + playerName + "." + index;
+        String path = "mobs." + cfgKey(playerName) + "." + index;
         mobsConfig.set(path + ".luckyBlockTimer", 0L);
         mobsConfig.set(path + ".luckyBlockReady", true);
         try { saveConfigAsync(mobsConfig, mobsFile); } catch (IOException e) {}
@@ -6973,6 +6982,16 @@ private boolean isBaseMob(Entity entity) {
                     world.spawnParticle(Particle.EXPLOSION, p.clone().add(0, 0.3, 0), 1, 0.15, 0.1, 0.15, 0.0);
                 }
             }
+            case BUBBLEGUM -> {
+                // Розовая липкая дымка — след бабл-гам машины.
+                if (tick % 4 == 0) {
+                    world.spawnParticle(Particle.DUST, p, 3, 0.28, 0.3, 0.28, 0,
+                            new Particle.DustOptions(org.bukkit.Color.fromRGB(255, 105, 180), 1.0f));
+                }
+                if (tick % 14 == 0) {
+                    world.spawnParticle(Particle.ITEM_SLIME, p.clone().add(0, 0.2, 0), 2, 0.2, 0.15, 0.2, 0.0);
+                }
+            }
             case RAINBOW -> {
                 if (tick % 2 == 0) {
                     org.bukkit.Color[] colors = {
@@ -7065,6 +7084,16 @@ private boolean isBaseMob(Entity entity) {
                 }
                 if (tick % 12 == 0) {
                     world.spawnParticle(Particle.EXPLOSION, p.clone().add(0, 0.3, 0), 1, 0.15, 0.1, 0.15, 0.0);
+                }
+            }
+            case BUBBLEGUM -> {
+                // Розовая липкая дымка — след бабл-гам машины.
+                if (tick % 4 == 0) {
+                    world.spawnParticle(Particle.DUST, p, 3, 0.28, 0.3, 0.28, 0,
+                            new Particle.DustOptions(org.bukkit.Color.fromRGB(255, 105, 180), 1.0f));
+                }
+                if (tick % 14 == 0) {
+                    world.spawnParticle(Particle.ITEM_SLIME, p.clone().add(0, 0.2, 0), 2, 0.2, 0.15, 0.2, 0.0);
                 }
             }
             case RAINBOW -> {
@@ -8130,7 +8159,7 @@ private boolean isBaseMob(Entity entity) {
         }
         savedPlayerMobs.remove(player.getName());
         if (mobsConfig != null) {
-            mobsConfig.set("mobs." + player.getName(), null);
+            mobsConfig.set("mobs." + cfgKey(player.getName()), null);
             try { saveConfigAsync(mobsConfig, mobsFile); } catch (IOException e) {}
         }
         saveRebirthData(player);
@@ -8353,7 +8382,7 @@ private boolean isBaseMob(Entity entity) {
             }
         }
         if (mobsConfig != null) {
-            mobsConfig.set("mobs." + player.getName(), null);
+            mobsConfig.set("mobs." + cfgKey(player.getName()), null);
             try {
                 saveConfigAsync(mobsConfig, mobsFile);
             } catch (IOException e) {
@@ -8684,13 +8713,13 @@ public List<String> getMobPoints(String baseName) {
                 }
             }
             if (mobsConfig != null) {
-                ConfigurationSection sec = mobsConfig.getConfigurationSection("mobs." + playerName);
+                ConfigurationSection sec = mobsConfig.getConfigurationSection("mobs." + cfgKey(playerName));
                 if (sec != null) {
                     for (String key : sec.getKeys(false)) {
-                        String mobType = mobsConfig.getString("mobs." + playerName + "." + key + ".mobType");
+                        String mobType = mobsConfig.getString("mobs." + cfgKey(playerName) + "." + key + ".mobType");
                         if ("SPONGE".equals(mobType)) {
-                            long timer = mobsConfig.getLong("mobs." + playerName + "." + key + ".luckyBlockTimer", -999);
-                            boolean rdy = mobsConfig.getBoolean("mobs." + playerName + "." + key + ".luckyBlockReady", false);
+                            long timer = mobsConfig.getLong("mobs." + cfgKey(playerName) + "." + key + ".luckyBlockTimer", -999);
+                            boolean rdy = mobsConfig.getBoolean("mobs." + cfgKey(playerName) + "." + key + ".luckyBlockReady", false);
                             debugLog("[JOIN DEBUG] mobs.yml LB: timer=" + timer + " ready=" + rdy);
                         }
                     }
@@ -8839,13 +8868,13 @@ public List<String> getMobPoints(String baseName) {
             }
             debugLog("[QUIT DEBUG] Проверяем mobs.yml...");
             if (mobsConfig != null) {
-                ConfigurationSection sec = mobsConfig.getConfigurationSection("mobs." + playerName);
+                ConfigurationSection sec = mobsConfig.getConfigurationSection("mobs." + cfgKey(playerName));
                 if (sec != null) {
                     for (String key : sec.getKeys(false)) {
-                        String mobType = mobsConfig.getString("mobs." + playerName + "." + key + ".mobType");
+                        String mobType = mobsConfig.getString("mobs." + cfgKey(playerName) + "." + key + ".mobType");
                         if ("SPONGE".equals(mobType)) {
-                            long timer = mobsConfig.getLong("mobs." + playerName + "." + key + ".luckyBlockTimer", -999);
-                            boolean rdy = mobsConfig.getBoolean("mobs." + playerName + "." + key + ".luckyBlockReady", false);
+                            long timer = mobsConfig.getLong("mobs." + cfgKey(playerName) + "." + key + ".luckyBlockTimer", -999);
+                            boolean rdy = mobsConfig.getBoolean("mobs." + cfgKey(playerName) + "." + key + ".luckyBlockReady", false);
                             debugLog("[QUIT DEBUG] mobs.yml LB: timer=" + timer + " ready=" + rdy);
                         }
                     }
@@ -8878,18 +8907,84 @@ public List<String> getMobPoints(String baseName) {
         debugLog("========== [QUIT DEBUG] Завершено ==========");
     }
     /**
+     * Ник игрока в виде ключа конфига.
+     *
+     * ЗДЕСЬ ТЕРЯЛИСЬ МОБЫ У BEDROCK-ИГРОКОВ. Floodgate по умолчанию выдаёт им
+     * ник с точкой впереди (".Nick"), а точка в Bukkit-конфигах — разделитель
+     * пути. В MemorySection пустой узел пути означает «эта же секция», поэтому
+     * путь "mobs." + ".Nick" + ".0.base" тихо превращался в mobs.Nick.0.base:
+     * ведущая точка просто съедалась. Записать/прочитать по такому пути ещё
+     * получалось, а вот getKeys(false) отдавал ключ "Nick" — и мобы попадали в
+     * savedPlayerMobs под ником БЕЗ точки. Дальше всё в рантайме ищет мобов по
+     * настоящему нику ".Nick", не находит, и мобы для игрока просто исчезают,
+     * хотя в файле они лежат.
+     *
+     * Точку меняем на '%': этого символа не бывает ни в никах Java-игроков
+     * (там только [A-Za-z0-9_]), ни в ключах Floodgate, поэтому столкнуться
+     * два разных игрока не могут, и путь больше не разваливается.
+     */
+    private static String cfgKey(String playerName) {
+        return playerName == null ? null : playerName.replace('.', '%');
+    }
+
+    /** Обратное преобразование: ключ конфига → настоящий ник. */
+    private static String cfgKeyToName(String key) {
+        return key == null ? null : key.replace('%', '.');
+    }
+
+    /**
+     * Разовый ремонт mobs.yml, испорченного старой склейкой путей.
+     *
+     * Мобы Bedrock-игроков не потеряны: они лежат под ключом без ведущей точки
+     * (".Nick" → "Nick"), и по этому ключу их не отличить от настоящего
+     * Java-игрока Nick. Поэтому опираемся на владельцев баз: имена владельцев
+     * хранятся ЗНАЧЕНИЯМИ в config.yml, а не ключами, значит точку сохранили.
+     * Если владелец базы — ".Nick", в mobs.yml есть "Nick" и ещё нет "%Nick",
+     * запись принадлежит Bedrock-игроку и её можно смело переименовать.
+     *
+     * Вызывается один раз при старте, после loadBases() и до загрузки мобов.
+     */
+    private void repairBedrockMobKeys() {
+        if (mobsConfig == null) return;
+        ConfigurationSection root = mobsConfig.getConfigurationSection("mobs");
+        if (root == null) return;
+        int moved = 0;
+        for (String owner : new HashSet<>(bases.values())) {
+            if (owner == null || owner.indexOf('.') < 0) continue;
+            String good = cfgKey(owner);
+            if (root.contains(good)) continue;
+            // Ключ, который получился из-за съеденных точек.
+            String broken = owner.replace(".", "");
+            if (broken.isEmpty() || !root.isConfigurationSection(broken)) continue;
+            root.set(good, root.get(broken));
+            root.set(broken, null);
+            moved++;
+            getLogger().info("Ремонт mobs.yml: мобы игрока " + owner
+                    + " перенесены из битого ключа \"" + broken + "\" в \"" + good + "\"");
+        }
+        if (moved == 0) return;
+        try {
+            saveConfigAsync(mobsConfig, mobsFile);
+        } catch (IOException e) {
+            getLogger().severe("Ремонт mobs.yml: ошибка записи: " + e.getMessage());
+            return;
+        }
+        getLogger().info("Ремонт mobs.yml: восстановлено записей Bedrock-игроков: " + moved);
+    }
+
+    /**
      * Пишет список мобов игрока в mobs.yml: секция mobs.&lt;игрок&gt; перезаписывается целиком.
      * Вынесено отдельно, чтобы формат записи был один на все пути сохранения —
      * раньше он был скопирован в четырёх местах и в двух из них терялась мутация.
      */
     private void writeSavedMobsSection(String playerName, List<SavedMobData> mobs) {
         if (mobsConfig == null || playerName == null) return;
-        mobsConfig.set("mobs." + playerName, null);
+        mobsConfig.set("mobs." + cfgKey(playerName), null);
         if (mobs != null) {
             for (int i = 0; i < mobs.size(); i++) {
                 SavedMobData m = mobs.get(i);
                 if (m == null || m.mobType == null) continue;
-                String path = "mobs." + playerName + "." + i;
+                String path = "mobs." + cfgKey(playerName) + "." + i;
                 mobsConfig.set(path + ".base", m.base);
                 mobsConfig.set(path + ".mobPoint", m.mobPoint);
                 mobsConfig.set(path + ".mobType", m.mobType.name());
@@ -9267,10 +9362,19 @@ public List<String> getMobPoints(String baseName) {
         }
         return result;
     }
-    /** Ищет игрока в секции mobs без учёта регистра — админ вряд ли наберёт ник точь-в-точь. */
+    /**
+     * Ищет игрока в секции mobs без учёта регистра — админ вряд ли наберёт ник точь-в-точь.
+     * Сравниваем с экранированным видом ника (см. cfgKey), иначе Bedrock-игрок
+     * с точкой в нике не найдётся никогда. Возвращает ключ конфига, не ник.
+     */
     private String findMobsSectionKey(FileConfiguration cfg, String playerName) {
         ConfigurationSection root = cfg.getConfigurationSection("mobs");
         if (root == null) return null;
+        String wanted = cfgKey(playerName);
+        for (String key : root.getKeys(false)) {
+            if (key.equalsIgnoreCase(wanted)) return key;
+        }
+        // Старые копии могли лечь ещё до экранирования: там ключ = ник как есть.
         for (String key : root.getKeys(false)) {
             if (key.equalsIgnoreCase(playerName)) return key;
         }
@@ -9414,27 +9518,31 @@ public List<String> getMobPoints(String baseName) {
                             sender.sendMessage("§cВ копии у игрока " + key + " ноль мобов — восстанавливать нечего.");
                             return true;
                         }
+                        // key — это ключ конфига (точка в нике Bedrock записана как '%').
+                        // В памяти и в Bukkit-API нужен настоящий ник, иначе мобы
+                        // восстановятся «в никого».
+                        final String realName = cfgKeyToName(key);
                         // Перед откатом кладём текущее состояние в копию: если админ
                         // ошибся файлом, откатить откат будет чем.
                         backupMobsFile();
-                        savedPlayerMobs.put(key, restored);
-                        writeSavedMobsSection(key, restored);
-                        sender.sendMessage("§aВосстановлено " + restored.size() + " мобов игрока §e" + key
+                        savedPlayerMobs.put(realName, restored);
+                        writeSavedMobsSection(realName, restored);
+                        sender.sendMessage("§aВосстановлено " + restored.size() + " мобов игрока §e" + realName
                                 + " §aиз §f" + file.getName());
-                        Player online = Bukkit.getPlayerExact(key);
+                        Player online = Bukkit.getPlayerExact(realName);
                         if (online != null && online.isOnline()) {
                             String base = findPlayerBase(online);
                             if (base != null) {
-                                restoringMobs.add(key);
+                                restoringMobs.add(realName);
                                 // Страховка: если отложенная задача почему-то не отработает,
                                 // флаг снимется сам и сохранения не заблокируются навсегда.
                                 Bukkit.getScheduler().runTaskLater(BrainrotBases.this,
-                                        () -> restoringMobs.remove(key), 200L);
+                                        () -> restoringMobs.remove(realName), 200L);
                                 removeAllMobsFromBase(base);
                                 Set<String> occupied = occupiedMobPoints.get(base);
                                 if (occupied != null) occupied.clear();
                                 Bukkit.getScheduler().runTaskLater(BrainrotBases.this,
-                                        () -> restorePlayerMobs(key), 20L);
+                                        () -> restorePlayerMobs(realName), 20L);
                                 sender.sendMessage("§7Игрок онлайн — мобы возвращены на базу " + base + ".");
                             } else {
                                 sender.sendMessage("§7Игрок онлайн, но без базы — мобы появятся при следующем заходе.");
