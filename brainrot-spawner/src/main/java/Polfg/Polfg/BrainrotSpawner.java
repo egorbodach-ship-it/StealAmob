@@ -1056,11 +1056,14 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     }
 
     // Мутации, которые стакаются с базовой (выдаются ивентами, а не при спавне).
+    // ВАЖНО: мутации, которой тут нет, applyStackableMutation просто не выдаст (вернёт
+    // false) и getExtraMutations не покажет её в нейм-теге. Именно из-за этого НЛО
+    // «не давало» Инопланетного: тег ставился, а ALIEN в список не был добавлен.
     private static final List<Mutation> STACKABLE_MUTATIONS =
             List.of(Mutation.SNOWY, Mutation.ELECTRIC, Mutation.METEOR, Mutation.EXPLOSIVE,
-                    Mutation.BUBBLEGUM);
+                    Mutation.BUBBLEGUM, Mutation.ALIEN);
 
-    /** Порядок фиксирован (Снежный, Электрический, Метеоритный, Взрывной, Баблгамовый) — от него зависит порядок строк нейм-тега. */
+    /** Порядок фиксирован (Снежный, Электрический, Метеоритный, Взрывной, Баблгамовый, Инопланетный) — от него зависит порядок строк нейм-тега. */
     private List<Mutation> getExtraMutations(Entity mob) {
         if (mob == null) return List.of();
         Set<String> tags = mob.getScoreboardTags();
@@ -2125,7 +2128,13 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     /** Моб вернулся на конвейер — и уже с мутацией, которую заказал ивент. */
     private void finishAbduction(Entity mob, GumLift lift) {
         if (mob == null || !mob.isValid() || mob.isDead()) return;
-        applyStackableMutation(mob, lift == null ? "ALIEN" : lift.mutation());
+        String mut = lift == null ? "ALIEN" : lift.mutation();
+        // Молчаливый false здесь однажды уже стоил вечера отладки: мутации не было в
+        // STACKABLE_MUTATIONS, тег не ставился, и со стороны луч «работал впустую».
+        if (!applyStackableMutation(mob, mut)) {
+            getLogger().warning("Луч отпустил моба, но мутация " + mut + " не навесилась: "
+                    + "либо её нет в STACKABLE_MUTATIONS, либо она уже висела, либо моб не наш.");
+        }
         World world = mob.getWorld();
         Location loc = mob.getLocation().add(0, 0.6, 0);
         try {
