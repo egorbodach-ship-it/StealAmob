@@ -285,6 +285,12 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private boolean ufoIncludeInAuto = false;
     private String ufoBlueprint = "ufo_abductor";
     private List<String> ufoSpawnPoints = new ArrayList<>();
+    /**
+     * На сколько блоков тарелка висит выше точки из spawn-points. Без этого запаса
+     * тарелка оказывалась ровно на уровне конвейера: моб никогда не был «под лучом»,
+     * поэтому захват не срабатывал вообще, а модель торчала в полу.
+     */
+    private double ufoHoverHeight = 6.0;
     private double ufoRoamRadius = 12.0;
     private double ufoSpeed = 0.09;
     private double ufoBeamRange = 5.0;
@@ -484,6 +490,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                     "-17 52 69", "-17 52 61", "-31 52 69", "-31 52 61", "-24 52 65")));
             changed = true;
         }
+        // Высота, на которой тарелка висит над точкой из spawn-points.
+        changed |= def("events.ufo.hover-height", 6.0);
         // Насколько далеко тарелка может уйти от своей точки. Наружу спавна не улетит.
         changed |= def("events.ufo.roam-radius", 12.0);
         changed |= def("events.ufo.speed", 0.09);
@@ -609,6 +617,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         ufoIncludeInAuto     = cfg.getBoolean("events.ufo.include-in-auto", false);
         ufoBlueprint         = cfg.getString("events.ufo.blueprint", "ufo_abductor");
         ufoSpawnPoints       = new ArrayList<>(cfg.getStringList("events.ufo.spawn-points"));
+        ufoHoverHeight       = Math.max(0.0, Math.min(24.0, cfg.getDouble("events.ufo.hover-height", 6.0)));
         if (ufoSpawnPoints.isEmpty()) ufoSpawnPoints.add("-17 52 69");
         ufoRoamRadius        = Math.max(2.0, cfg.getDouble("events.ufo.roam-radius", 12.0));
         ufoSpeed             = Math.max(0.02, Math.min(0.6, cfg.getDouble("events.ufo.speed", 0.09)));
@@ -2160,11 +2169,14 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         boolean modelOk = isSpawnerModelEngineAvailable();
         int spawned = 0;
         for (String raw : ufoSpawnPoints) {
-            Location home = parseRoadsPoint(world, raw);
-            if (home == null) {
+            Location parsed = parseRoadsPoint(world, raw);
+            if (parsed == null) {
                 getLogger().warning("НЛО: не разобрал точку '" + raw + "' в events.ufo.spawn-points.");
                 continue;
             }
+            // Точки в конфиге даны на уровне спавна, а тарелка должна висеть НАД мобами:
+            // иначе луч некому забирать (моб обязан быть ниже тарелки) и модель сидит в полу.
+            Location home = parsed.clone().add(0.0, ufoHoverHeight, 0.0);
             Entity carrier = spawnUfoCarrier(home);
             if (carrier == null) continue;
             if (modelOk && !attachSpawnerModel(carrier, ufoBlueprint)) {
@@ -2301,27 +2313,49 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         if (System.currentTimeMillis() < u.readyAtMillis) return;
         if (countUfoBeams() >= ufoMaxBeams) return;
         if (random.nextDouble() * 100.0 >= ufoChance) return;
+        pickUfoTarget(u, true);
+    }
 
+    /**
+     * Ищет моба под тарелкой и запускает луч.
+     *
+     * @param quiet true для обычного тика (молча), false для /brainrotevent ufobeam —
+     *              там нужно объяснить, почему цели нет, иначе ивент выглядит «сломанным».
+     * @return null при успехе либо причина отказа
+     */
+    private String pickUfoTarget(UfoUnit u, boolean quiet) {
         Entity best = null;
         double bestDist = Double.MAX_VALUE;
+        int seen = 0, tooHigh = 0, tooFar = 0, busy = 0;
         for (Entity mob : getSpawnerMobs()) {
             if (mob == null || !mob.isValid() || mob.isDead()) continue;
             if (!mob.getWorld().equals(u.carrier.getWorld())) continue;
+            seen++;
             Location l = mob.getLocation();
-            if (l.getY() > u.y - 0.5) continue;      // моб должен быть под тарелкой
+            double drop = u.y - l.getY();
+            // Моб обязан быть под тарелкой, но не на два этажа ниже.
+            if (drop < 1.5) { tooHigh++; continue; }
+            if (drop > ufoHoverHeight + 8.0) { tooFar++; continue; }
             double d = Math.hypot(l.getX() - u.x, l.getZ() - u.z);
-            if (d > ufoBeamRange || d >= bestDist) continue;
-            if (isSpawnerAbducted(mob)) continue;
+            if (d > ufoBeamRange) { tooFar++; continue; }
+            if (d >= bestDist) continue;
+            if (isSpawnerAbducted(mob)) { busy++; continue; }
             best = mob;
             bestDist = d;
         }
-        if (best == null) return;
+        if (best == null) {
+            return "мобов спавнера рядом: " + seen + " §7(выше тарелки: " + tooHigh
+                    + ", далеко: " + tooFar + ", уже в луче: " + busy + ")";
+        }
 
         int hold = (int) Math.round((ufoHoldMinSeconds
                 + random.nextDouble() * (ufoHoldMaxSeconds - ufoHoldMinSeconds)) * 20.0);
         // Столько поднимаем, чтобы моб не влез в саму тарелку.
         double rise = Math.min(ufoRiseBlocks, Math.max(1.0, u.y - best.getLocation().getY() - 1.5));
-        if (!startSpawnerAbduction(best, rise, hold, "ALIEN")) return;
+        if (!startSpawnerAbduction(best, rise, hold, "ALIEN")) {
+            return "спавнер отказался поднимать моба (startAbduction вернул false — "
+                    + "либо моб уже в лифте, либо мутация ALIEN на нём уже есть, либо спавнер старой сборки)";
+        }
 
         u.target = best;
         // 50 тиков подъём + висение + 40 тиков возврат — так считает лифт в спавнере.
@@ -2330,6 +2364,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         u.readyAtMillis = System.currentTimeMillis() + (long) (ufoCooldownSeconds * 1000.0)
                 + u.beamTotal * 50L;
         playSpawnerModel(u.carrier, "beam_on", false);
+        if (!quiet) getLogger().info("НЛО: луч включён вручную, держим " + (hold / 20.0) + "с.");
+        return null;
     }
 
     /**
@@ -2474,6 +2510,34 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         if (spawner == null) return;
         try { spawner.getClass().getMethod("detachEventModel", Entity.class).invoke(spawner, entity); }
         catch (Throwable ignored) {}
+    }
+
+    /** Есть ли в установленной сборке спавнера нужный метод: сборки расходятся во времени. */
+    private boolean spawnerHasMethod(String name, int argc) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return false;
+        for (java.lang.reflect.Method m : spawner.getClass().getMethods()) {
+            if (m.getName().equals(name) && m.getParameterCount() == argc) return true;
+        }
+        return false;
+    }
+
+    /** Отчёт ModelEngine по тарелке: главное — список анимаций, которые видит ME. */
+    @SuppressWarnings("unchecked")
+    private List<String> describeSpawnerModel(Entity entity) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null || entity == null) return List.of("§cспавнер не подключён");
+        try {
+            Object res = spawner.getClass().getMethod("describeEventModel", Entity.class)
+                    .invoke(spawner, entity);
+            if (res instanceof List) return (List<String>) res;
+        } catch (NoSuchMethodException ex) {
+            return List.of("§7describeEventModel в спавнере нет — обнови BrainrotSpawner, "
+                    + "чтобы видеть список анимаций блюпринта");
+        } catch (Throwable t) {
+            return List.of("§cне удалось получить отчёт ME: " + t);
+        }
+        return List.of();
     }
 
     // =========================================================
@@ -2874,6 +2938,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 sender.sendMessage("§6/" + label + " start <badweather|meteor|creeper|3road|2x|gum> [секунды] §7— можно запускать несколько сразу");
                 sender.sendMessage("§6/" + label + " stop [badweather|meteor|creeper|3road|2x|gum] §7— остановить один или все");
                 sender.sendMessage("§6/" + label + " status §7— что сейчас идёт");
+                sender.sendMessage("§6/" + label + " ufodebug §7— почему НЛО не забирает мобов");
+                sender.sendMessage("§6/" + label + " ufobeam §7— включить луч прямо сейчас (проверка мутации)");
                 sender.sendMessage("§6/" + label + " reload §7— перечитать конфиг");
                 return true;
             }
@@ -2939,6 +3005,13 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                                     + " §7| перестройка: " + (roadsBusy ? "§eидёт" : "§aзакончена")
                                     + " §7| схемы: §f" + roadsSchemOpen + " §7/ §f" + roadsSchemClose);
                         }
+                        if (s.type == EventType.UFO) {
+                            sender.sendMessage("§7  тарелок: §f" + ufos.size()
+                                    + " §7| лучей: §f" + countUfoBeams() + "§7/§f" + ufoMaxBeams
+                                    + " §7| высота: §f+" + trimNumber(ufoHoverHeight)
+                                    + " §7| шанс: §f" + trimNumber(ufoChance) + "%"
+                                    + " §7| подробности: §f/" + label + " ufodebug");
+                        }
                         if (s.type == EventType.GUM_MACHINE) {
                             sender.sendMessage("§7  схема: §f" + gumSchematic
                                     + " §7| шанс: §f" + trimNumber(gumChance) + "%"
@@ -2950,6 +3023,56 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                                     + " §7| лифт в спавнере: " + (isSpawnerGumActive() ? "§aвкл" : "§cвыкл"));
                         }
                     }
+                }
+                case "ufodebug" -> {
+                    sender.sendMessage("§7Спавнер: " + (getSpawnerPlugin() != null ? "§aда" : "§cнет")
+                            + " §7| startAbduction: " + (spawnerHasMethod("startAbduction", 4) ? "§aесть" : "§cНЕТ (обнови BrainrotSpawner)")
+                            + " §7| ME: " + (isSpawnerModelEngineAvailable() ? "§aда" : "§cнет"));
+                    sender.sendMessage("§7Тарелок: §f" + ufos.size() + " §7| лучей сейчас: §f" + countUfoBeams()
+                            + "§7/§f" + ufoMaxBeams + " §7| мобов спавнера: §f" + getSpawnerMobs().size());
+                    sender.sendMessage("§7hover-height §f" + trimNumber(ufoHoverHeight)
+                            + " §7| beam-range §f" + trimNumber(ufoBeamRange)
+                            + " §7| шанс §f" + trimNumber(ufoChance) + "% §7раз в §f" + ufoTryInterval + " §7тиков"
+                            + " §7| подъём §f" + trimNumber(ufoRiseBlocks));
+                    for (UfoUnit u : new ArrayList<>(ufos)) {
+                        sender.sendMessage(String.format(Locale.US,
+                                "§7  тарелка §fY=%.1f §7(%.1f, %.1f) §7луч: %s §7кд: %.1fс",
+                                u.y, u.x, u.z, u.beamTicks > 0 ? "§aидёт" : "§7нет",
+                                Math.max(0, u.readyAtMillis - System.currentTimeMillis()) / 1000.0));
+                        int seen = 0;
+                        for (Entity mob : getSpawnerMobs()) {
+                            if (mob == null || !mob.isValid()) continue;
+                            if (!mob.getWorld().equals(u.carrier.getWorld())) continue;
+                            seen++;
+                            Location l = mob.getLocation();
+                            double d = Math.hypot(l.getX() - u.x, l.getZ() - u.z);
+                            if (d <= ufoBeamRange + 4) {
+                                sender.sendMessage(String.format(Locale.US,
+                                        "§7    моб рядом: гориз. §f%.1f §7(лимит %.1f), ниже на §f%.1f",
+                                        d, ufoBeamRange, u.y - l.getY()));
+                            }
+                        }
+                        if (seen == 0) sender.sendMessage("§c    мобов спавнера в этом мире нет вообще");
+                    }
+                    if (!ufos.isEmpty()) {
+                        for (String line : describeSpawnerModel(ufos.get(0).carrier)) {
+                            sender.sendMessage("§7  " + line);
+                        }
+                    }
+                }
+                case "ufobeam" -> {
+                    if (ufos.isEmpty()) { sender.sendMessage("§cИвент НЛО не идёт — сначала /" + label + " start ufo."); return true; }
+                    boolean done = false;
+                    for (UfoUnit u : new ArrayList<>(ufos)) {
+                        if (u.beamTicks > 0) continue;
+                        // Кулдаун при ручной проверке сбрасываем: иначе «ничего не происходит».
+                        u.readyAtMillis = 0L;
+                        String why = pickUfoTarget(u, false);
+                        if (why == null) { done = true; break; }
+                        sender.sendMessage("§7Тарелка отказала: §f" + why);
+                    }
+                    sender.sendMessage(done ? "§aЛуч включён — через ~2.5с моб поднимется, потом вернётся «Инопланетным»."
+                            : "§cНи одна тарелка не нашла моба. Смотри /" + label + " ufodebug.");
                 }
                 case "reload" -> {
                     reloadConfig();
@@ -2968,7 +3091,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         @Override
         public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
             if (args.length == 1) {
-                return filter(List.of("start", "stop", "status", "reload"), args[0]);
+                return filter(List.of("start", "stop", "status", "reload", "ufodebug", "ufobeam"), args[0]);
             }
             if (args.length == 2 && (args[0].equalsIgnoreCase("start") || args[0].equalsIgnoreCase("stop"))) {
                 return filter(List.of("badweather", "meteor", "creeper", "3road", "2x", "gum", "ufo"), args[1]);

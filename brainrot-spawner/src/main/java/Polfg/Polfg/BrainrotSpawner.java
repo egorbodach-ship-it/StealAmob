@@ -2203,6 +2203,16 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         ModelEngineHook.detach(entity);
     }
 
+    /**
+     * Отчёт ModelEngine по сущности ивента: подключён ли ME, какой ActiveModel и,
+     * главное, какие имена анимаций ME реально разобрал из блюпринта. Нужен
+     * BrainrotEvents для /brainrotevent ufodebug — иначе «анимации не играют»
+     * приходится диагностировать вслепую.
+     */
+    public java.util.List<String> describeEventModel(Entity entity) {
+        return ModelEngineHook.describe(entity);
+    }
+
     // ===== Публичный API для BrainrotEvents (вызывается рефлексией) =====
 
     /**
