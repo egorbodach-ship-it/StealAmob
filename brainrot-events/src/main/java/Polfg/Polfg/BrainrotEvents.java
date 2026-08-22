@@ -271,6 +271,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private double gumChance = 10;
     private double gumHoldMinSeconds = 4.0;
     private double gumHoldMaxSeconds = 5.0;
+    private double gumCooldownSeconds = 8.0;
     private boolean gumBusy = false;
     private static final String GUM_SNAPSHOT_FILE = "gum-snapshot.yml";
     private String regionName = "spawn";
@@ -440,6 +441,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         changed |= def("events.gum-machine.chance-percent", 10);
         changed |= def("events.gum-machine.hold-seconds-min", 4.0);
         changed |= def("events.gum-machine.hold-seconds-max", 5.0);
+        // После посадки моба машина столько отдыхает — второй пузырь не начнётся.
+        changed |= def("events.gum-machine.cooldown-seconds", 8.0);
         // Ставится, пока схема стоит в мире: снимок блоков лежит в gum-snapshot.yml,
         // и при падении сервера мы откатим регион по нему на следующем старте.
         changed |= def("events.gum-machine.state.active", false);
@@ -550,6 +553,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         gumChance            = Math.max(0.0, Math.min(100.0, cfg.getDouble("events.gum-machine.chance-percent", 10)));
         gumHoldMinSeconds    = Math.max(0.5, cfg.getDouble("events.gum-machine.hold-seconds-min", 4.0));
         gumHoldMaxSeconds    = Math.max(gumHoldMinSeconds, cfg.getDouble("events.gum-machine.hold-seconds-max", 5.0));
+        gumCooldownSeconds   = Math.max(0.0, cfg.getDouble("events.gum-machine.cooldown-seconds", 8.0));
         regionName           = cfg.getString("events.region.worldguard-region", "spawn");
         regionPadding        = Math.max(0, cfg.getDouble("events.region.padding", 8));
         manualMinX           = cfg.getDouble("events.region.min-x", 0);
@@ -1988,6 +1992,17 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         int holdMin = (int) Math.round(gumHoldMinSeconds * 20.0);
         int holdMax = (int) Math.round(gumHoldMaxSeconds * 20.0);
         try {
+            // Сначала версия с кулдауном, потом старая на 8 аргументов —
+            // чтобы плагин работал и со спавнером, собранным до кулдауна.
+            try {
+                Object res = spawner.getClass().getMethod("setGumMachine", String.class, double.class, double.class,
+                                double.class, double.class, double.class, int.class, int.class, double.class)
+                        .invoke(spawner, world.getName(), trigger.getX(), trigger.getY(), trigger.getZ(),
+                                gumTopY, gumChance, holdMin, holdMax, gumCooldownSeconds);
+                return !(res instanceof Boolean b) || b;
+            } catch (NoSuchMethodException ignored) {
+                getLogger().warning("Бабл Гам Машина: у спавнера нет кулдауна (старая сборка) — включаю без него.");
+            }
             Object res = spawner.getClass().getMethod("setGumMachine", String.class, double.class, double.class,
                             double.class, double.class, double.class, int.class, int.class)
                     .invoke(spawner, world.getName(), trigger.getX(), trigger.getY(), trigger.getZ(),
@@ -2490,6 +2505,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                             sender.sendMessage("§7  схема: §f" + gumSchematic
                                     + " §7| шанс: §f" + trimNumber(gumChance) + "%"
                                     + " §7| висит: §f" + trimNumber(gumHoldMinSeconds) + "–" + trimNumber(gumHoldMaxSeconds) + "с"
+                                    + " §7| кд: §f" + trimNumber(gumCooldownSeconds) + "с"
                                     + " §7| верх Y: §f" + trimNumber(gumTopY));
                             sender.sendMessage("§7  снимок региона: " + (gumSnapshotFile().exists() ? "§aесть" : "§cнет")
                                     + " §7| стройка: " + (gumBusy ? "§eидёт" : "§aзакончена")

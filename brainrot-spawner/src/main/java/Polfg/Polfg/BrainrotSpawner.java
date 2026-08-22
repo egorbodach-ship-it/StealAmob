@@ -116,6 +116,11 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private volatile double gumChancePercent = 10.0;
     private volatile int gumHoldTicksMin = 80;
     private volatile int gumHoldTicksMax = 100;
+    // Кулдаун машины: после посадки одного моба пузырь 8 секунд никого не берёт.
+    // Считаем от МОМЕНТА ПОСАДКИ, а не от захвата, иначе кулдаун частично
+    // проедался бы теми 4-5 секундами, что моб висит наверху.
+    private volatile long gumCooldownMillis = 8000L;
+    private volatile long gumReadyAtMillis = 0L;
     private final Map<Entity, GumLift> gumLifts = new HashMap<>();
 
     /** Состояние одного моба в пузыре: вверх → висит → вниз. */
@@ -265,13 +270,18 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     // logMobChances печатает эти числа как проценты, поэтому сумму держим честной.
     // Мифик урезан с 1.89 до 0.89, освободившийся процент отдан Обычному (55 -> 56):
     // экономику это не задевает, а мифики перестают лезть из каждой второй волны.
+    // Божественный урезан с 0.10 до 0.03 (1 из 3333 спавнов), освободившиеся
+    // 0.07% ушли Обычному (56.0 -> 56.07). Причина: тир один Самоварус, а
+    // конвейеров несколько и каждый бросает свой кубик независимо, поэтому по
+    // ощущениям он выпадал заметно чаще, чем «раз в тысячу». Сетка по-прежнему
+    // ровно 100, цены и доход не тронуты.
     private enum Rarity {
-        COMMON("Обычный", "§a", 56.0),
+        COMMON("Обычный", "§a", 56.07),
         RARE("Редкий", "§9", 25.0),
         EPIC("Эпический", "§5", 13.0),
         LEGENDARY("Легендарный", "§6§l", 5.0),
         MYTHICAL("✦ Мифический ✦", "§d§l", 0.89),
-        BRAINROT_GOD("✧ Божественный ✧", "§b§l", 0.10),
+        BRAINROT_GOD("✧ Божественный ✧", "§b§l", 0.03),
         SECRET("☠ Секретный ☠", "§8§l", 0.01),
         EVENT("Ивентовый", "§2§l", 0.0);
 
@@ -1983,6 +1993,12 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         if (Math.abs(z - gumTriggerZ) > 1.2) return null;
         if (Math.abs(y - gumTriggerY) > 3.0) return null;
         mob.addScoreboardTag(GUM_ROLLED_TAG);
+        // Машина занята (кто-то ещё висит) или отдыхает после прошлого моба.
+        // Метку всё равно ставим: у моба был свой единственный шанс, и он
+        // пришёлся на занятую машину — иначе он бы кидал кубик каждый тик,
+        // пока едет через зону триггера, и 10% превратились бы почти в 100%.
+        if (!gumLifts.isEmpty()) return null;
+        if (System.currentTimeMillis() < gumReadyAtMillis) return null;
         if (Math.random() * 100.0 >= gumChancePercent) return null;
         int min = Math.min(gumHoldTicksMin, gumHoldTicksMax);
         int max = Math.max(gumHoldTicksMin, gumHoldTicksMax);
@@ -2016,6 +2032,8 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
 
     /** Пузырь лопнул: моб на конвейере и уже с мутацией «Баблгамовый». */
     private void finishGumLift(Entity mob) {
+        // Кулдаун тикает с посадки — даже если моб к этому моменту умер.
+        gumReadyAtMillis = System.currentTimeMillis() + gumCooldownMillis;
         if (mob == null || !mob.isValid() || mob.isDead()) return;
         applyStackableMutation(mob, "BUBBLEGUM");
         World world = mob.getWorld();
@@ -2041,6 +2059,14 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
      */
     public boolean setGumMachine(String worldName, double triggerX, double triggerY, double triggerZ,
                                  double topY, double chancePercent, int holdTicksMin, int holdTicksMax) {
+        return setGumMachine(worldName, triggerX, triggerY, triggerZ, topY, chancePercent,
+                holdTicksMin, holdTicksMax, 8.0);
+    }
+
+    /** Та же машина, но с явным кулдауном в секундах (0 — без кулдауна). */
+    public boolean setGumMachine(String worldName, double triggerX, double triggerY, double triggerZ,
+                                 double topY, double chancePercent, int holdTicksMin, int holdTicksMax,
+                                 double cooldownSeconds) {
         if (worldName == null || worldName.isEmpty()) return false;
         gumMachineWorld = worldName;
         gumTriggerX = triggerX;
@@ -2050,10 +2076,12 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         gumChancePercent = Math.max(0.0, Math.min(100.0, chancePercent));
         gumHoldTicksMin = Math.max(1, holdTicksMin);
         gumHoldTicksMax = Math.max(gumHoldTicksMin, holdTicksMax);
+        gumCooldownMillis = Math.max(0L, Math.round(cooldownSeconds * 1000.0));
+        gumReadyAtMillis = 0L;
         gumMachineActive = true;
         getLogger().info("[GUM] Бабл-гам машина включена: " + worldName + " триггер "
                 + triggerX + "/" + triggerY + "/" + triggerZ + " верх Y=" + topY
-                + " шанс " + gumChancePercent + "%");
+                + " шанс " + gumChancePercent + "% кулдаун " + (gumCooldownMillis / 1000.0) + "с");
         return true;
     }
 
@@ -2061,6 +2089,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     public void clearGumMachine() {
         gumMachineActive = false;
         gumMachineWorld = null;
+        gumReadyAtMillis = 0L;
         gumLifts.clear();
         for (Entity mob : new ArrayList<>(mobDataMap.keySet())) {
             try { mob.removeScoreboardTag(GUM_ROLLED_TAG); } catch (Throwable ignored) {}
@@ -2224,7 +2253,8 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             double totalWeight = 0;
             for (MobData mob : MobData.values()) { if (mob.rarity == rarity) { mobsInRarity.add(mob); totalWeight += mob.weight; } }
             getLogger().info("");
-            getLogger().info(rarity.format + "══ " + rarity.displayName + " §7(" + String.format("%.1f", rarity.chance) + "% шанс, " + mobsInRarity.size() + " мобов) " + rarity.format + "══");
+            // Два знака: у Божественного 0.03 и Секретного 0.01 один знак давал «0.0%».
+            getLogger().info(rarity.format + "══ " + rarity.displayName + " §7(" + String.format(Locale.US, "%.2f", rarity.chance) + "% шанс, " + mobsInRarity.size() + " мобов) " + rarity.format + "══");
             final double finalTotalWeight = totalWeight;
             mobsInRarity.sort((a, b) -> Double.compare(b.weight, a.weight));
             for (MobData mob : mobsInRarity) {
@@ -2838,7 +2868,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
             if (a[0].equalsIgnoreCase("list")) {
                 for (Rarity r : Rarity.values()) {
                     List<String> names = Arrays.stream(MobData.values()).filter(m -> m.rarity == r).map(Enum::name).collect(Collectors.toList());
-                    s.sendMessage(r.format + r.displayName + " §7(" + String.format("%.1f", r.chance) + "%): §f" + String.join(", ", names));
+                    s.sendMessage(r.format + r.displayName + " §7(" + String.format(Locale.US, "%.2f", r.chance) + "%): §f" + String.join(", ", names));
                 }
                 return true;
             }
