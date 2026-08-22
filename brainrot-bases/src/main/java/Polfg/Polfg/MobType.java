@@ -71,16 +71,21 @@ public enum MobType {
     // Божественный. Стоит последним намеренно: fromEntity в конце перебирает
     // MobType по типу сущности, и обычный HUSK объявлен выше — значит ванильный
     // хаск по-прежнему опознаётся как HUSK, а Самоварус ловится раньше по тегу
-    // MOB_SAMOVARUS. Доход и цена совпадают со спавнером: 120к/сек, 40кк.
-    SAMOVARUS("Самоварус Максимус", EntityType.HUSK, 120000.0, Material.CAULDRON, 40000000, true, Rarity.BRAINROT_GOD);
+    // MOB_SAMOVARUS. Доход и цена совпадают со спавнером: 19к/сек, 6.5кк.
+    SAMOVARUS("Самоварус Максимус", EntityType.HUSK, 19000.0, Material.CAULDRON, 6_500_000L, true, Rarity.BRAINROT_GOD),
+    // Секретный. Тоже строго последним и после SAMOVARUS: ENDER_DRAGON — свой
+    // отдельный EntityType, поэтому порядок ему не мешает, но правило «высшие
+    // тиры внизу» держим. Числа как в спавнере: 250 млрд цена, 1 млрд/сек.
+    // Поэтому sellPrice ниже — long, в int такое не влезает.
+    ENDER_DRAGON("Эндер Дракон", EntityType.ENDER_DRAGON, 1_000_000_000.0, Material.DRAGON_EGG, 250_000_000_000L, true, Rarity.SECRET);
     public final String name;
     public final EntityType type;
     public double baseIncome;
     public final Material icon;
-    public int sellPrice;
+    public long sellPrice;
     public final boolean isRare;
     public final Rarity rarity;
-    MobType(String name, EntityType type, double baseIncome, Material icon, int sellPrice, boolean isRare, Rarity rarity) {
+    MobType(String name, EntityType type, double baseIncome, Material icon, long sellPrice, boolean isRare, Rarity rarity) {
         this.name = name;
         this.type = type;
         this.baseIncome = baseIncome;
@@ -103,11 +108,15 @@ public enum MobType {
         // плагину читается как «высший тир» и управляет частицами, тегами и
         // подсветкой в тридцати с лишним местах. Отдельный флаг заставил бы
         // править их все, а Самоварус без них выглядел бы как обычный моб.
+        // Секретный (Эндер Дракон) — по той же причине.
         // На деньги это не влияет: доход берётся из baseIncome.
-        return rarity == Rarity.MYTHICAL || rarity == Rarity.BRAINROT_GOD;
+        return rarity == Rarity.MYTHICAL || rarity == Rarity.BRAINROT_GOD || rarity == Rarity.SECRET;
     }
     public boolean isGod() {
         return rarity == Rarity.BRAINROT_GOD;
+    }
+    public boolean isSecret() {
+        return rarity == Rarity.SECRET;
     }
     /**
      * Id блюпринта ModelEngine, или null если моб ванильный.

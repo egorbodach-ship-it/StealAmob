@@ -370,7 +370,7 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
         // сущность, поэтому setupMob гасит ей ИИ и гравитацию как всем прочим,
         // и по ней исправно приходит PlayerInteractAtEntityEvent. Саму её
         // ModelEngine прячет, игрок видит только модель самовара.
-        SAMOVARUS("Самоварус Максимус", EntityType.HUSK, 40_000_000L, 120_000L, 100, Rarity.BRAINROT_GOD),
+        SAMOVARUS("Самоварус Максимус", EntityType.HUSK, 6_500_000L, 19_000L, 100, Rarity.BRAINROT_GOD),
 
         ENDER_DRAGON("Эндер Дракон", EntityType.ENDER_DRAGON, 250_000_000_000L, 1_000_000_000L, 100, Rarity.SECRET),
 

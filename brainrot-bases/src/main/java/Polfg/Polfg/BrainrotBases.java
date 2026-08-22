@@ -215,6 +215,9 @@ public class BrainrotBases extends JavaPlugin implements Listener {
     private static int STEAL_TIME = 5;
     private static final double STEAL_HOLOGRAM_HEIGHT = 2.5;
     private static int LOCK_DURATION = 60;
+    // Щит при входе на сервер: база закрывается сама на эти секунды, пока
+    // хозяин догружает мир. 0 — выключить (config economy.join-lock-duration-seconds).
+    private static int JOIN_LOCK_DURATION = 20;
     private static int REBIRTH_LOCK_DURATION_1 = 70;
     private static int REBIRTH_LOCK_DURATION_2 = 80;
     private static int REBIRTH_LOCK_DURATION_3 = 90;
@@ -2369,10 +2372,12 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             mobSpawnTime.remove(entity);
             entity.remove();
         }
-        int sellPrice = type.sellPrice;
+        long sellPrice = type.sellPrice;
         if (economy != null) {
             economy.depositPlayer(player, sellPrice);
-            player.sendMessage(color("&a✔ Моб продан за &6$" + formatNumber(sellPrice) + "&a! Баланс: &6$" + formatNumber((int)economy.getBalance(player))));
+            // Баланс печатаем как double: после продажи Эндер Дракона (250 млрд)
+            // приведение к int переполнялось бы и показывало отрицательные деньги.
+            player.sendMessage(color("&a✔ Моб продан за &6$" + formatNumber(sellPrice) + "&a! Баланс: &6$" + formatNumber(economy.getBalance(player))));
         } else {
             player.sendMessage(color("&a✔ Моб продан за &6$" + formatNumber(sellPrice) + "&a!"));
         }
@@ -4440,25 +4445,59 @@ private boolean isBaseMob(Entity entity) {
         updateLockHologram(base);
         updateHologram(base);
         player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_PLACE, 1f, 1f);
+        kickIntrudersFromBase(base, player);
+    }
+
+    /**
+     * Выкидывает с базы всех, кроме хозяина: и тех, кто внутри региона, и тех,
+     * кто прилип к стене частиц. Вынесено из lockBase, потому что тем же самым
+     * занимается щит при входе (applyJoinProtection).
+     */
+    private void kickIntrudersFromBase(String base, Player owner) {
+        String ownerName = bases.get(base);
         long currentTime = System.currentTimeMillis();
         String regionName = baseRegionNames.get(base);
         String particlePoint = baseParticlePoints.get(base);
-        FileConfiguration cfg = getConfig();
-        String worldName = cfg.getString("bases." + base + ".world");
+        String worldName = getConfig().getString("bases." + base + ".world");
         World world = worldName != null ? Bukkit.getWorld(worldName) : null;
-        if (world != null) {
-            for (Player p : world.getPlayers()) {
-                if (p.equals(player)) continue;
-                if (p.getName().equals(owner)) continue;
-                if (regionName != null && isPlayerInRegion(p, regionName)) {
-                    executeKick(p, base, currentTime, KickReason.REGION);
-                    continue;
-                }
-                if (particlePoint != null && isPlayerNearParticleWall(p, particlePoint)) {
-                    executeKick(p, base, currentTime, KickReason.PARTICLE_WALL);
-                }
+        if (world == null) return;
+        for (Player p : world.getPlayers()) {
+            if (owner != null && p.equals(owner)) continue;
+            if (ownerName != null && p.getName().equals(ownerName)) continue;
+            if (regionName != null && isPlayerInRegion(p, regionName)) {
+                executeKick(p, base, currentTime, KickReason.REGION);
+                continue;
+            }
+            if (particlePoint != null && isPlayerNearParticleWall(p, particlePoint)) {
+                executeKick(p, base, currentTime, KickReason.PARTICLE_WALL);
             }
         }
+    }
+
+    /**
+     * Щит при входе на сервер. Заходящий игрок несколько секунд грузит чанки и
+     * в это время беззащитен: вор успевает зайти и вынести мобов, пока хозяин
+     * смотрит в «Загрузка террейна». Поэтому база закрывается сама, ровно как
+     * кнопкой, на JOIN_LOCK_DURATION секунд.
+     *
+     * Метод идемпотентный: вызывается дважды (сразу на входе и после того, как
+     * база определилась/назначилась), но уже стоящий более длинный замок не
+     * укорачивает и второй раз не пишет в чат.
+     */
+    private void applyJoinProtection(Player player, String base) {
+        if (player == null || base == null || JOIN_LOCK_DURATION <= 0) return;
+        String owner = bases.get(base);
+        if (owner == null || !owner.equals(player.getName())) return;
+        int current = baseLocked.getOrDefault(base, false) ? baseLockTime.getOrDefault(base, 0) : 0;
+        if (current >= JOIN_LOCK_DURATION) return;
+        baseLocked.put(base, true);
+        baseLockTime.put(base, JOIN_LOCK_DURATION);
+        updateLockHologram(base);
+        updateHologram(base);
+        try { player.playSound(player.getLocation(), Sound.BLOCK_ANVIL_PLACE, 1f, 1.2f); } catch (Throwable ignored) {}
+        sendCooldownMessage(player, "§a✔ База закрыта на §e" + JOIN_LOCK_DURATION
+                + "§a сек. — защита на время входа!", lastLockMessage);
+        kickIntrudersFromBase(base, player);
     }
     public void adminDeleteMob(String playerName, int index) {
         if (mobsConfig == null || savedPlayerMobs == null) return;
@@ -5634,6 +5673,19 @@ private boolean isBaseMob(Entity entity) {
             }
             if (type == MobType.ZOGLIN && mob instanceof Zoglin zoglin) {
             }
+            // Эндер Дракон. На базе он стоит на месте, поэтому несущая сущность
+            // (как в спавнере) не нужна — хватит фазы HOVER, чтобы он не улетал
+            // к порталу, спрятанного босс-бара и того же масштаба 0.25, иначе
+            // дракон в натуральную величину накрывает половину базы.
+            if (type == MobType.ENDER_DRAGON && mob instanceof EnderDragon dragon) {
+                try { dragon.setPhase(EnderDragon.Phase.HOVER); } catch (Throwable ignored) {}
+                try { if (dragon.getBossBar() != null) dragon.getBossBar().setVisible(false); } catch (Throwable ignored) {}
+                try {
+                    org.bukkit.attribute.AttributeInstance scale = living.getAttribute(org.bukkit.attribute.Attribute.SCALE);
+                    if (scale != null) scale.setBaseValue(0.25);
+                } catch (Throwable ignored) {}
+                mob.addScoreboardTag("DRAGON_RIG");
+            }
         }
         mob.addScoreboardTag("BASE_MOB_PERSISTENT");
         mob.addScoreboardTag("NO_DESPAWN");
@@ -5889,6 +5941,18 @@ private boolean isBaseMob(Entity entity) {
             if (mob instanceof Enderman enderman) {
                 enderman.setTarget(null);
                 enderman.setCarriedBlock(null);
+            }
+            // Эндер Дракон при восстановлении из mobs.yml. Тот же набор, что и в
+            // spawnMobAtPoint: без него дракон после рестарта вылезал в полный
+            // размер, с босс-баром и улетал к порталу.
+            if (type == MobType.ENDER_DRAGON && mob instanceof EnderDragon dragon) {
+                try { dragon.setPhase(EnderDragon.Phase.HOVER); } catch (Throwable ignored) {}
+                try { if (dragon.getBossBar() != null) dragon.getBossBar().setVisible(false); } catch (Throwable ignored) {}
+                try {
+                    org.bukkit.attribute.AttributeInstance scale = living.getAttribute(org.bukkit.attribute.Attribute.SCALE);
+                    if (scale != null) scale.setBaseValue(0.25);
+                } catch (Throwable ignored) {}
+                mob.addScoreboardTag("DRAGON_RIG");
             }
         }
         mob.addScoreboardTag("BASE_MOB_PERSISTENT");
@@ -7531,6 +7595,7 @@ private boolean isBaseMob(Entity entity) {
         cfg.addDefault("economy.collect-cooldown-ms", COLLECT_COOLDOWN);
         cfg.addDefault("economy.lucky-block-timer-ms", LUCKY_BLOCK_TIMER);
         cfg.addDefault("economy.base-lock-duration-seconds", LOCK_DURATION);
+        cfg.addDefault("economy.join-lock-duration-seconds", JOIN_LOCK_DURATION);
         if (!cfg.isSet("economy.rebirth.earn-multipliers")) {
             java.util.List<Double> em = new java.util.ArrayList<>();
             for (double d : REBIRTH_EARN_MULTIPLIERS) em.add(d);
@@ -7568,6 +7633,7 @@ private boolean isBaseMob(Entity entity) {
         COLLECT_COOLDOWN = cfg.getLong("economy.collect-cooldown-ms", COLLECT_COOLDOWN);
         LUCKY_BLOCK_TIMER = cfg.getLong("economy.lucky-block-timer-ms", LUCKY_BLOCK_TIMER);
         LOCK_DURATION = cfg.getInt("economy.base-lock-duration-seconds", LOCK_DURATION);
+        JOIN_LOCK_DURATION = Math.max(0, cfg.getInt("economy.join-lock-duration-seconds", JOIN_LOCK_DURATION));
         java.util.List<Double> em = cfg.getDoubleList("economy.rebirth.earn-multipliers");
         if (em != null && !em.isEmpty()) {
             double[] arr = new double[em.size()];
@@ -7594,7 +7660,8 @@ private boolean isBaseMob(Entity entity) {
         }
         for (MobType mt : MobType.values()) {
             mt.baseIncome = cfg.getDouble("economy.mobs." + mt.name() + ".base-income", mt.baseIncome);
-            mt.sellPrice = cfg.getInt("economy.mobs." + mt.name() + ".sell-price", mt.sellPrice);
+            // getLong, а не getInt: цена Эндер Дракона (250 млрд) в int не влезает.
+            mt.sellPrice = cfg.getLong("economy.mobs." + mt.name() + ".sell-price", mt.sellPrice);
         }
         getLogger().info("[Economy] Конфиг экономики загружен: мобов=" + MobType.values().length + ", мутаций=" + (Mutation.values().length - 1) + ".");
     }
@@ -8700,6 +8767,12 @@ public List<String> getMobPoints(String baseName) {
         // занятой, а мобов на ней ещё нет — сохранение в этот момент не имеет
         // права записать «мобов ноль», см. savePlayerMobsInstantly.
         joinTimeMs.put(playerName, System.currentTimeMillis());
+        // Щит ставим ПЕРВЫМ делом, до всей тяжёлой возни с восстановлением мобов:
+        // основная работа onJoin отложена на 20 тиков, а вор в эту секунду уже
+        // может стоять на базе. Если база ещё не назначена, щит повесится ниже,
+        // как только она определится.
+        String joinBase = findPlayerBase(p);
+        if (joinBase != null) applyJoinProtection(p, joinBase);
         Bukkit.getScheduler().runTaskLater(this, () -> {
             debugLog("========== [JOIN DEBUG] Вход " + playerName + " ==========");
             List<SavedMobData> savedMobs = savedPlayerMobs.get(playerName);
@@ -8736,6 +8809,7 @@ public List<String> getMobPoints(String baseName) {
             }
             if (playerBase != null) {
                 debugLog("[JOIN DEBUG] База игрока: " + playerBase);
+                applyJoinProtection(p, playerBase);
                 if (hasSavedMobs) {
                     // Ставим щит ДО removeAllMobsFromBase: между снятием старых мобов
                     // и восстановлением есть окно (у applyStage вставка схематики
@@ -8775,6 +8849,7 @@ public List<String> getMobPoints(String baseName) {
                     Bukkit.getScheduler().runTaskLater(this, () -> restoringMobs.remove(playerName), 200L);
                 }
                 bases.put(selectedBase, playerName);
+                applyJoinProtection(p, selectedBase);
                 teleportToBaseSpawn(p, selectedBase);
                 updateHologram(selectedBase);
                 if (hasSavedMobs) {
