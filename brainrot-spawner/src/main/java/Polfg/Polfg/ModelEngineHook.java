@@ -36,11 +36,21 @@ public final class ModelEngineHook {
     private static Method mCreateActiveModel;
     private static Method mCreateModeledEntity;
     private static Method mRemoveModeledEntity;
+    private static Method mGetModeledEntity;
 
     /** UUID сущности → ActiveModel */
     private static final Map<UUID, Object> MODELS = new ConcurrentHashMap<>();
     /** UUID сущности → ModeledEntity */
     private static final Map<UUID, Object> RIGS = new ConcurrentHashMap<>();
+    /**
+     * UUID сущности → id блюпринта. Нужен, чтобы навесить модель заново, если ME
+     * её потерял (выгрузка чанка, /meg reload, перезапуск самого ME). Именно из-за
+     * отсутствия этой памяти анимация «то работает, то нет»: модель отваливалась,
+     * а код продолжал звать playAnimation в пустоту.
+     */
+    private static final Map<UUID, String> BLUEPRINTS = new ConcurrentHashMap<>();
+    /** Сколько раз мы уже пытались перецепить модель. Три промаха — сдаёмся молча. */
+    private static final Map<UUID, Integer> REATTACH_TRIES = new ConcurrentHashMap<>();
 
     /**
      * Ключи уже показанных однократных сообщений. Анимации дёргаются из тикающих
@@ -74,6 +84,9 @@ public final class ModelEngineHook {
             mCreateActiveModel = findStatic(apiClass, "createActiveModel", 1);
             mCreateModeledEntity = findStatic(apiClass, "createModeledEntity", 1);
             mRemoveModeledEntity = findStatic(apiClass, "removeModeledEntity", 1);
+            // Между сборками ME зовётся то getModeledEntity, то getModeledEntities —
+            // берём то, что нашлось: по нему проверяем, жив ли ещё наш риг.
+            mGetModeledEntity = findStatic(apiClass, "getModeledEntity", 1);
             if (mCreateActiveModel == null || mCreateModeledEntity == null) {
                 Bukkit.getLogger().warning(LOG + "ModelEngine есть, но API незнакомый "
                         + "(нет createActiveModel/createModeledEntity) — модели отключены");
@@ -132,6 +145,13 @@ public final class ModelEngineHook {
             Object live = unwrap(attached);
             if (live != null && live.getClass() == model.getClass()) model = live;
 
+            // Авторитетно спрашиваем риг, какой объект модели он у себя оставил.
+            // addModel в части сборок клонирует ActiveModel, и тогда наш экземпляр
+            // становится «сиротой»: анимации на нём проигрываются в никуда — ещё
+            // одна причина тихо пропадающей походки.
+            Object owned = modelFromRig(rig, blueprint);
+            if (owned != null) model = owned;
+
             // Ванильную сущность-подложку убираем с глаз: она нужна только как
             // якорь позиции и хитбокс под клики игрока.
             Method vis = findMethod(rig.getClass(), "setBaseEntityVisible", 1);
@@ -139,6 +159,8 @@ public final class ModelEngineHook {
 
             MODELS.put(id, model);
             RIGS.put(id, rig);
+            BLUEPRINTS.put(id, blueprint.toLowerCase(Locale.ROOT));
+            REATTACH_TRIES.remove(id);
             return true;
         } catch (Throwable t) {
             Bukkit.getLogger().warning(LOG + "не удалось навесить \"" + blueprint + "\": " + rootCause(t));
@@ -148,12 +170,119 @@ public final class ModelEngineHook {
         }
     }
 
+    /**
+     * Достаёт из рига тот экземпляр ActiveModel, который он реально держит.
+     * Путей несколько: getModel(id) отдаёт Optional, getModels() — Map.
+     */
+    private static Object modelFromRig(Object rig, String blueprint) {
+        if (rig == null) return null;
+        String key = blueprint == null ? null : blueprint.toLowerCase(Locale.ROOT);
+        try {
+            Method one = findMethod(rig.getClass(), "getModel", 1);
+            if (one != null && key != null && one.getParameterTypes()[0] == String.class) {
+                Object res = unwrap(one.invoke(rig, key));
+                if (res != null) return res;
+            }
+            Method all = findMethod(rig.getClass(), "getModels", 0);
+            if (all != null) {
+                Object res = all.invoke(rig);
+                if (res instanceof Map<?, ?> map) {
+                    if (key != null) {
+                        for (Map.Entry<?, ?> e : map.entrySet()) {
+                            if (String.valueOf(e.getKey()).equalsIgnoreCase(key) && e.getValue() != null) {
+                                return e.getValue();
+                            }
+                        }
+                    }
+                    for (Object v : map.values()) if (v != null) return v;
+                } else if (res instanceof Iterable<?> it) {
+                    for (Object v : it) if (v != null) return v;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * Проверяет, что модель на сущности всё ещё жива, и при необходимости
+     * навешивает её заново по запомненному блюпринту.
+     *
+     * Ровно это и лечит «анимация запускается через раз»: ME теряет рига при
+     * выгрузке чанка и при собственном reload, наш кэш об этом не узнаёт, и все
+     * последующие playAnimation тихо уходят в никуда до перезапуска сервера.
+     *
+     * @return true, если после вызова модель на сущности есть
+     */
+    public static boolean ensureAttached(Entity mob) {
+        if (mob == null || !mob.isValid() || mob.isDead()) return false;
+        if (!isAvailable()) return false;
+        UUID id = mob.getUniqueId();
+        String blueprint = BLUEPRINTS.get(id);
+        if (blueprint == null) return MODELS.containsKey(id);
+        if (rigAlive(id) && MODELS.get(id) != null) {
+            REATTACH_TRIES.remove(id);
+            return true;
+        }
+        int tries = REATTACH_TRIES.getOrDefault(id, 0);
+        if (tries >= 3) return false;
+        REATTACH_TRIES.put(id, tries + 1);
+        // Старый риг мог остаться висеть половинчато — сносим и строим заново.
+        Object stale = RIGS.remove(id);
+        MODELS.remove(id);
+        if (stale != null) {
+            try {
+                Method destroy = findMethod(stale.getClass(), "destroy", 0);
+                if (destroy != null) destroy.invoke(stale);
+            } catch (Throwable ignored) {}
+        }
+        boolean ok = attach(mob, blueprint);
+        if (ok) {
+            Bukkit.getLogger().info(LOG + "модель \"" + blueprint + "\" навешена заново "
+                    + "(ME потерял рига, попытка " + (tries + 1) + ")");
+        } else if (tries + 1 >= 3) {
+            warnOnce("reattach-fail-" + blueprint, "не смог вернуть модель \"" + blueprint
+                    + "\" после трёх попыток — дальше моб останется ванильным");
+        }
+        return ok;
+    }
+
+    /** Жив ли ещё наш риг с точки зрения самого ModelEngine. */
+    private static boolean rigAlive(UUID id) {
+        Object rig = RIGS.get(id);
+        if (rig == null) return false;
+        try {
+            Method removed = findMethod(rig.getClass(), "isRemoved", 0);
+            if (removed == null) removed = findMethod(rig.getClass(), "isDestroyed", 0);
+            if (removed != null) {
+                Object res = removed.invoke(rig);
+                if (res instanceof Boolean gone && gone) return false;
+            }
+        } catch (Throwable ignored) {}
+        if (mGetModeledEntity != null) {
+            try {
+                Class<?> want = mGetModeledEntity.getParameterTypes()[0];
+                Object arg = (want == UUID.class) ? id : null;
+                if (arg != null) {
+                    Object live = unwrap(mGetModeledEntity.invoke(null, arg));
+                    // ME знает про сущность — риг на месте. Не знает — потеряли.
+                    return live != null;
+                }
+            } catch (Throwable ignored) {}
+        }
+        return true;
+    }
+
     /** Снимает модель. Дёргать обязательно, иначе ME оставит висеть рига без хозяина. */
     public static void detach(Entity mob) {
         if (mob == null) return;
         UUID id = mob.getUniqueId();
         Object rig = RIGS.remove(id);
         MODELS.remove(id);
+        // Блюпринт забываем здесь же: иначе ensureAttached упорно возвращал бы
+        // модель на моба, которого мы только что осознанно почистили.
+        BLUEPRINTS.remove(id);
+        REATTACH_TRIES.remove(id);
         if (rig == null) return;
         try {
             Method destroy = findMethod(rig.getClass(), "destroy", 0);
@@ -167,9 +296,15 @@ public final class ModelEngineHook {
         }
     }
 
-    /** Есть ли на этой сущности наша модель. */
+    /**
+     * Есть ли на этой сущности наша модель. Помнить блюпринт достаточно: сам
+     * объект модели ME может у нас из-под рук потерять, а тикающие задачи должны
+     * продолжать заходить сюда, иначе восстанавливать станет некому.
+     */
     public static boolean hasModel(Entity mob) {
-        return mob != null && MODELS.containsKey(mob.getUniqueId());
+        if (mob == null) return false;
+        UUID id = mob.getUniqueId();
+        return MODELS.containsKey(id) || BLUEPRINTS.containsKey(id);
     }
 
     // ── анимации ──────────────────────────────────────────────────────────
@@ -194,12 +329,70 @@ public final class ModelEngineHook {
     }
 
     /**
-     * Тихая проверка-подстраховка: если анимация уже идёт, ME вернёт «нет» и мы
-     * молча уходим — это штатный ответ, а не ошибка, ругаться в консоль нельзя.
-     * Если же цикл почему-то оборвался, анимация запустится заново.
+     * Страховка зацикленной анимации. Сначала убеждаемся, что модель вообще на
+     * месте (её могло унести выгрузкой чанка), потом спрашиваем ME, играет ли
+     * сейчас нужный цикл. Если точно не играет — поднимаем с force, иначе не
+     * трогаем: перезапуск идущей анимации виден как дёрганый кадр.
+     *
+     * Раньше здесь был слепой мягкий запрос, и когда ME считал цикл идущим, а на
+     * экране моб стоял столбом, вернуть походку могла только перезагрузка сервера.
      */
     public static boolean keepAlive(Entity mob, String animation) {
-        return play(mob, animation, 0.2, 0.2, 1.0, false, true);
+        if (mob == null || animation == null) return false;
+        if (!ensureAttached(mob)) return false;
+        Boolean playing = isPlaying(mob, animation);
+        if (Boolean.TRUE.equals(playing)) return true;
+        boolean force = Boolean.FALSE.equals(playing);
+        return play(mob, animation, 0.2, 0.2, 1.0, force, true);
+    }
+
+    /**
+     * Играет ли сейчас именно эта анимация. null — ME не умеет отвечать на такой
+     * вопрос в этой сборке, тогда решение принимается по старой мягкой схеме.
+     */
+    public static Boolean isPlaying(Entity mob, String animation) {
+        if (mob == null || animation == null) return null;
+        Object model = MODELS.get(mob.getUniqueId());
+        if (model == null) return Boolean.FALSE;
+        try {
+            Method getHandler = findMethod(model.getClass(), "getAnimationHandler", 0);
+            if (getHandler == null) return null;
+            Object handler = getHandler.invoke(model);
+            if (handler == null) return null;
+            // Прямой вопрос «играешь ли X».
+            for (String name : new String[]{"isPlayingAnimation", "isPlaying"}) {
+                Method m = findMethod(handler.getClass(), name, 1);
+                if (m != null && m.getParameterTypes()[0] == String.class) {
+                    Object res = m.invoke(handler, animation);
+                    if (res instanceof Boolean b) return b;
+                }
+            }
+            // Иначе смотрим список того, что крутится прямо сейчас.
+            for (String name : new String[]{"getPlayingAnimations", "getAnimations", "getAnimation"}) {
+                Method m = findMethod(handler.getClass(), name, 0);
+                if (m == null) continue;
+                Object res = m.invoke(handler);
+                if (res == null) continue;
+                if (res instanceof Map<?, ?> map) {
+                    if (map.isEmpty()) return Boolean.FALSE;
+                    for (Object k : map.keySet()) {
+                        if (String.valueOf(k).equalsIgnoreCase(animation)) return Boolean.TRUE;
+                    }
+                    return Boolean.FALSE;
+                }
+                if (res instanceof Iterable<?> it) {
+                    boolean any = false;
+                    for (Object v : it) {
+                        any = true;
+                        if (v != null && String.valueOf(v).toLowerCase(Locale.ROOT)
+                                .contains(animation.toLowerCase(Locale.ROOT))) return Boolean.TRUE;
+                    }
+                    return any ? Boolean.FALSE : Boolean.FALSE;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     /**
@@ -217,6 +410,11 @@ public final class ModelEngineHook {
                                 double speed, boolean force, boolean quiet) {
         if (mob == null || animation == null) return false;
         Object model = MODELS.get(mob.getUniqueId());
+        if (model == null) {
+            // Модель могло унести выгрузкой чанка или /meg reload. Если блюпринт
+            // помним — возвращаем её на место и играем как ни в чём не бывало.
+            if (ensureAttached(mob)) model = MODELS.get(mob.getUniqueId());
+        }
         if (model == null) {
             if (!quiet) warnOnce("no-model", "анимация \"" + animation + "\": на этой сущности нет нашей "
                     + "модели — attach не сработал либо моб уже почищен");

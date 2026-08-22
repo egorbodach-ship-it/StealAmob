@@ -113,7 +113,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         BAD_WEATHER("badweather", "Плохая Погода", "§9§l", BarColor.BLUE),
         METEOR_SHOWER("meteor", "Метеоритный Дождь", "§c§l", BarColor.RED),
         CREEPER_PARTY("creeper", "Крипер Пати", "§a§l", BarColor.GREEN),
-        THREE_ROADS("3road", "3 Тропы", "§6§l", BarColor.YELLOW);
+        THREE_ROADS("3road", "3 Тропы", "§6§l", BarColor.YELLOW),
+        LUCKY_2X("2x", "2x Удача", "§d§l", BarColor.PURPLE);
 
         final String key;
         final String title;
@@ -131,6 +132,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (k.startsWith("плох") || k.startsWith("weather") || k.startsWith("storm")) return BAD_WEATHER;
             if (k.startsWith("метео") || k.startsWith("meteor")) return METEOR_SHOWER;
             if (k.startsWith("крип") || k.startsWith("creep") || k.startsWith("party") || k.startsWith("пати")) return CREEPER_PARTY;
+            // «2x удача» проверяется раньше троп: иначе «2x» съел бы префикс-матч по цифре.
+            if (k.startsWith("удач") || k.startsWith("luck") || k.startsWith("2") || k.equals("x2")) return LUCKY_2X;
             if (k.startsWith("троп") || k.startsWith("3") || k.startsWith("три") || k.startsWith("road")
                     || k.startsWith("tropy") || k.startsWith("path")) return THREE_ROADS;
             return null;
@@ -243,6 +246,12 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private String roadsLane2End = "23 47 57";
     private double roadsLaneSpeed = 0;
     private long roadsLaneCooldown = 0;
+
+    // «2x Удача»
+    private boolean luckEnabled = true;
+    private int luckDuration = 300;
+    private boolean luckIncludeInAuto = false;
+    private double luckMultiplier = 2.0;
     private String regionName = "spawn";
     private double regionPadding = 8;
     private double manualMinX = 0, manualMinZ = 0, manualMaxX = 0, manualMaxZ = 0;
@@ -279,7 +288,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         // Если сервер упал с открытыми «3 Тропами» — вернуть схему и дёрн.
         restoreRoadsAfterCrash();
         getLogger().info("BrainrotEvents включён. Трек: " + soundKey
-                + ", ивенты: Плохая Погода / Метеоритный Дождь / Крипер Пати / 3 Тропы");
+                + ", ивенты: Плохая Погода / Метеоритный Дождь / Крипер Пати / 3 Тропы / 2x Удача");
     }
 
     @Override
@@ -391,6 +400,11 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         // Ставится на время стройки: если сервер упадёт, при старте вернём дёрн и схему.
         changed |= def("events.three-roads.state.active", false);
         changed |= def("events.three-roads.state.world", "");
+        // «2x Удача»: множитель шансов в спавнере на Легендарный и выше.
+        changed |= def("events.lucky-2x.enabled", true);
+        changed |= def("events.lucky-2x.duration-seconds", 300);
+        changed |= def("events.lucky-2x.include-in-auto", false);
+        changed |= def("events.lucky-2x.multiplier", 2.0);
         changed |= def("events.region.worldguard-region", "spawn");
         changed |= def("events.region.padding", 8);
         changed |= def("events.region.min-x", 0);
@@ -482,6 +496,10 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         roadsLane2End        = cfg.getString("events.three-roads.lane2.end", "23 47 57");
         roadsLaneSpeed       = Math.max(0.0, cfg.getDouble("events.three-roads.lane-speed", 0.0));
         roadsLaneCooldown    = Math.max(0L, cfg.getLong("events.three-roads.lane-cooldown-ticks", 0L));
+        luckEnabled          = cfg.getBoolean("events.lucky-2x.enabled", true);
+        luckDuration         = Math.max(5, cfg.getInt("events.lucky-2x.duration-seconds", 300));
+        luckIncludeInAuto    = cfg.getBoolean("events.lucky-2x.include-in-auto", false);
+        luckMultiplier       = Math.max(1.0, Math.min(10.0, cfg.getDouble("events.lucky-2x.multiplier", 2.0)));
         regionName           = cfg.getString("events.region.worldguard-region", "spawn");
         regionPadding        = Math.max(0, cfg.getDouble("events.region.padding", 8));
         manualMinX           = cfg.getDouble("events.region.min-x", 0);
@@ -601,6 +619,10 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 return false;
             }
         }
+        if (type == EventType.LUCKY_2X && !luckEnabled) {
+            if (feedback != null) feedback.sendMessage("§cИвент «2x Удача» отключён в конфиге.");
+            return false;
+        }
         if (isActive(type)) {
             if (type == EventType.THREE_ROADS) {
                 // Карта уже перестроена. Разбирать её и строить заново — это две лишние
@@ -624,6 +646,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 case METEOR_SHOWER -> meteorDuration;
                 case CREEPER_PARTY -> creeperDuration;
                 case THREE_ROADS -> roadsDuration;
+                case LUCKY_2X -> luckDuration;
             };
         }
 
@@ -643,6 +666,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 case METEOR_SHOWER -> Sound.ENTITY_GENERIC_EXPLODE;
                 case CREEPER_PARTY -> Sound.ENTITY_CREEPER_PRIMED;
                 case THREE_ROADS -> Sound.ENTITY_PLAYER_LEVELUP;
+                case LUCKY_2X -> Sound.ENTITY_PLAYER_LEVELUP;
             }, 0.7f, 0.8f);
         }
 
@@ -657,6 +681,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 if (roadsLaneIds.isEmpty()) startThreeRoads(session);
                 else getLogger().info("3 Тропы: карта уже открыта, продлеваю ивент до " + seconds + "с.");
             }
+            case LUCKY_2X -> startLucky2x(session);
         }
 
         getLogger().info("Ивент " + type.title + " запущен на " + seconds + "с в мире " + world.getName()
@@ -770,6 +795,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             }
             case CREEPER_PARTY -> clearCreeperParty();
             case THREE_ROADS -> teardownThreeRoads(s.world);
+            case LUCKY_2X -> stopLucky2x();
         }
 
         if (sessions.isEmpty() && barTask != null) {
@@ -801,6 +827,11 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 // поэтому запускается руками. Включается events.three-roads.include-in-auto.
                 if (roadsEnabled && roadsIncludeInAuto && !roadsBusy && !isActive(EventType.THREE_ROADS)) {
                     pool.add(EventType.THREE_ROADS);
+                }
+                // «2x Удача» тоже вне ротации по умолчанию — это подарок, а не погода.
+                // Включается events.lucky-2x.include-in-auto.
+                if (luckEnabled && luckIncludeInAuto && !isActive(EventType.LUCKY_2X)) {
+                    pool.add(EventType.LUCKY_2X);
                 }
                 if (pool.isEmpty()) return;
                 startEvent(pool.get(random.nextInt(pool.size())), 0, null);
@@ -1567,6 +1598,77 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     }
 
     // =========================================================
+    // ИВЕНТ 5: 2x УДАЧА
+    // =========================================================
+    /**
+     * Просит спавнер поднять шансы на Легендарный и выше. Всё удвоение считает
+     * сам спавнер: он единственный знает свою сетку редкостей и умеет забрать
+     * разницу у Обычного, чтобы сумма осталась ровно 100.
+     *
+     * Множитель живёт только в памяти спавнера, поэтому падение сервера с
+     * активным ивентом не оставит шансы перекошенными — после старта они обычные.
+     */
+    private void startLucky2x(EventSession session) {
+        if (!setSpawnerLuck(luckMultiplier)) {
+            getLogger().warning("2x Удача: спавнер не отозвался, шансы не изменились "
+                    + "(нет BrainrotSpawner или он старой версии).");
+            return;
+        }
+        String mult = trimNumber(luckMultiplier);
+        for (Player p : session.world.getPlayers()) {
+            p.sendMessage("§d§l✦ ×" + mult + " удача! §7Шанс на легендарных и выше поднят.");
+        }
+        getLogger().info("2x Удача: множитель ×" + mult + " включён.");
+    }
+
+    private void stopLucky2x() {
+        clearSpawnerLuck();
+        getLogger().info("2x Удача: множитель снят.");
+    }
+
+    /** «2» вместо «2.0» в сообщениях игрокам. */
+    private String trimNumber(double v) {
+        return (v == Math.rint(v)) ? String.valueOf((long) v) : String.format(Locale.US, "%.2f", v);
+    }
+
+    private boolean setSpawnerLuck(double multiplier) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return false;
+        try {
+            Object res = spawner.getClass().getMethod("setLuckMultiplier", double.class)
+                    .invoke(spawner, multiplier);
+            return !(res instanceof Boolean b) || b;
+        } catch (NoSuchMethodException ex) {
+            getLogger().warning("2x Удача: в установленном BrainrotSpawner нет setLuckMultiplier — обнови спавнер.");
+            return false;
+        } catch (Throwable t) {
+            getLogger().warning("2x Удача: не удалось включить множитель: " + t);
+            return false;
+        }
+    }
+
+    private void clearSpawnerLuck() {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return;
+        try {
+            spawner.getClass().getMethod("clearLuckMultiplier").invoke(spawner);
+        } catch (Throwable t) {
+            getLogger().warning("2x Удача: не удалось снять множитель: " + t);
+        }
+    }
+
+    /** Текущий множитель по данным спавнера — для /brevent status. */
+    private double getSpawnerLuck() {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null) return 1.0;
+        try {
+            Object res = spawner.getClass().getMethod("getLuckMultiplier").invoke(spawner);
+            if (res instanceof Number n) return n.doubleValue();
+        } catch (Throwable ignored) {}
+        return 1.0;
+    }
+
+    // =========================================================
     // РЕГИОН (WorldGuard -> конвейеры -> ручной бокс)
     // =========================================================
     private double[] getRegionBounds(World world) {
@@ -1961,15 +2063,15 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 return true;
             }
             if (args.length == 0) {
-                sender.sendMessage("§6/" + label + " start <badweather|meteor|creeper|3road> [секунды] §7— можно запускать несколько сразу");
-                sender.sendMessage("§6/" + label + " stop [badweather|meteor|creeper|3road] §7— остановить один или все");
+                sender.sendMessage("§6/" + label + " start <badweather|meteor|creeper|3road|2x> [секунды] §7— можно запускать несколько сразу");
+                sender.sendMessage("§6/" + label + " stop [badweather|meteor|creeper|3road|2x] §7— остановить один или все");
                 sender.sendMessage("§6/" + label + " status §7— что сейчас идёт");
                 sender.sendMessage("§6/" + label + " reload §7— перечитать конфиг");
                 return true;
             }
             switch (args[0].toLowerCase(Locale.ROOT)) {
                 case "start" -> {
-                    if (args.length < 2) { sender.sendMessage("§cУкажи ивент: badweather, meteor, creeper или 3road."); return true; }
+                    if (args.length < 2) { sender.sendMessage("§cУкажи ивент: badweather, meteor, creeper, 3road или 2x."); return true; }
                     EventType type = EventType.byKey(args[1]);
                     if (type == null) { sender.sendMessage("§cНеизвестный ивент: " + args[1]); return true; }
                     int seconds = 0;
@@ -2001,6 +2103,9 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                             + " §7(events.world = §f" + (eventsWorldName.isEmpty() ? "авто" : eventsWorldName) + "§7)");
                     sender.sendMessage("§7Спавнер подключён: " + (getSpawnerPlugin() != null ? "§aда" : "§cнет")
                             + " §7| мобов на конвейере: §f" + getSpawnerMobs().size());
+                    double lm = getSpawnerLuck();
+                    sender.sendMessage("§7Множитель удачи в спавнере: §f×" + trimNumber(lm)
+                            + (lm > 1.0 ? " §d(ивент идёт)" : " §7(обычные шансы)"));
                     if (w != null) {
                         double[] box = getRegionBounds(w);
                         sender.sendMessage("§7Область метеоритов: §f" + (box == null ? "не определена"
@@ -2048,7 +2153,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 return filter(List.of("start", "stop", "status", "reload"), args[0]);
             }
             if (args.length == 2 && (args[0].equalsIgnoreCase("start") || args[0].equalsIgnoreCase("stop"))) {
-                return filter(List.of("badweather", "meteor", "creeper", "3road"), args[1]);
+                return filter(List.of("badweather", "meteor", "creeper", "3road", "2x"), args[1]);
             }
             if (args.length == 3 && args[0].equalsIgnoreCase("start")) {
                 return filter(List.of("60", "120", "180", "300"), args[2]);

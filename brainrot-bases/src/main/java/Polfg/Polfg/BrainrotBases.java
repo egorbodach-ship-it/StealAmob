@@ -413,6 +413,7 @@ public class BrainrotBases extends JavaPlugin implements Listener {
         }
         startMobCheckTimer();
         startAggressiveMobCheckTimer();
+        startBaseModelTimer();
         Bukkit.getScheduler().runTaskLater(this, new Runnable() {
             @Override
             public void run() {
@@ -996,6 +997,73 @@ public class BrainrotBases extends JavaPlugin implements Listener {
             }
         }, 20L, 20L);
     }
+    /**
+     * Навешивает модель ModelEngine на моба базы.
+     *
+     * Первую анимацию НЕ дёргаем в том же тике, что attach: ME доводит рига до
+     * готовности в своём тике, и запрос из тика attach попадает в гонку —
+     * успел ME тикнуть после нас, анимация встала; не успел — потерялась.
+     * Ровно от этого анимация Самоваруса «то работает, то нет».
+     */
+    /**
+     * Разворачивает подложку на 180° для мобов с моделью ModelEngine.
+     *
+     * Блюпринт Самоваруса смотрит в обратную сторону от «лица» сущности, и в
+     * спавнере тот же разворот делается через modelengine.yaw-offset. Крутим yaw
+     * подложки, а не геометрию: сама сущность невидима, хитбокс в майнкрафте
+     * осесимметричный, поэтому клики игрока не поедут.
+     */
+    private float applyModelYaw(MobType type, float yaw) {
+        if (type == null || type.modelEngineBlueprint() == null) return yaw;
+        return Location.normalizeYaw(yaw + 180.0f);
+    }
+
+    private void attachBaseModel(Entity mob, MobType type, boolean playSpawn) {
+        if (mob == null || type == null) return;
+        String blueprint = type.modelEngineBlueprint();
+        if (blueprint == null) return;
+        if (!BaseModelHook.attach(mob, blueprint)) return;
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (mob.isValid() && !mob.isDead()) {
+                if (playSpawn) BaseModelHook.playForced(mob, "spawn");
+                else BaseModelHook.loop(mob, "idle");
+            }
+        }, 2L);
+        if (playSpawn) {
+            // «spawn» в блюпринте длится 1.5с — возвращаемся в стойку после неё.
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (mob.isValid() && !mob.isDead()) BaseModelHook.loop(mob, "idle");
+            }, 34L);
+        }
+    }
+
+    /**
+     * Раз в 2 секунды проверяет мобов базы: модель на месте, стойка крутится.
+     * Этим же таском закрываются перезапуск сервера, выгрузка чанка, /meg reload
+     * и кража моба — отдельной логики восстановления не нужно.
+     */
+    private void startBaseModelTimer() {
+        Bukkit.getScheduler().runTaskTimer(this, () -> {
+            // Проверяем доступность внутри такта, а не на старте: порядок загрузки
+            // плагинов не гарантирован, и ModelEngine может подняться позже нас.
+            if (!BaseModelHook.isAvailable()) return;
+            for (Map.Entry<Entity, String> entry : new HashMap<>(entityToPointMap).entrySet()) {
+                Entity mob = entry.getKey();
+                if (mob == null) continue;
+                if (!mob.isValid() || mob.isDead()) {
+                    // Сущности больше нет — снимаем рига, иначе ME оставит его висеть.
+                    if (BaseModelHook.hasModel(mob)) BaseModelHook.detach(mob);
+                    continue;
+                }
+                MobType type = MobType.fromEntity(mob);
+                if (type == null) continue;
+                String blueprint = type.modelEngineBlueprint();
+                if (blueprint == null) continue;
+                BaseModelHook.keepAlive(mob, "idle", blueprint);
+            }
+        }, 60L, 40L);
+    }
+
     private void startAggressiveMobCheckTimer() {
         Bukkit.getScheduler().runTaskTimer(this, new Runnable() {
             @Override
@@ -1263,6 +1331,9 @@ public class BrainrotBases extends JavaPlugin implements Listener {
                 entity.remove();
             }
         }
+        // Ригов ME снимаем после удаления сущностей: иначе ME оставит висеть
+        // модель без хозяина, и после /reload на базе будет стоять «призрак».
+        try { BaseModelHook.detachAll(); } catch (Throwable ignored) {}
         entityToPointMap.clear();
         mobSpawnTime.clear();
         for (Hologram holo : collectorHolograms.values()) {
@@ -5399,6 +5470,7 @@ private boolean isBaseMob(Entity entity) {
             int __slot = stage2SlotIndex(base, mobPoint);
             yaw = (__slot >= 0 && __slot < 4) ? 90.0f : -90.0f;
         }
+        yaw = applyModelYaw(type, yaw);
         loc.setYaw(yaw);
         loc.setPitch(0.0f);
         removeMobAtPoint(mobPoint);
@@ -5609,6 +5681,7 @@ private boolean isBaseMob(Entity entity) {
         }
         debugLog("Создан " + type.name + " (редкость: " + type.rarity + ") на точке " + mobPoint + " с доходом " + type.baseIncome + "/сек");
         final Entity finalMob = mob;
+        attachBaseModel(finalMob, type, true);
         String owner = bases.get(base);
         if (owner != null && !owner.equals("none")) {
             Bukkit.getScheduler().runTaskLater(this, () -> {
@@ -5782,6 +5855,7 @@ private boolean isBaseMob(Entity entity) {
             int __slot = stage2SlotIndex(base, mobPoint);
             yaw = (__slot >= 0 && __slot < 4) ? 90.0f : -90.0f;
         }
+        yaw = applyModelYaw(type, yaw);
         loc.setYaw(yaw);
         loc.setPitch(0.0f);
         removeMobAtPoint(mobPoint);
@@ -5838,6 +5912,8 @@ private boolean isBaseMob(Entity entity) {
         }
         debugLog("✓ Моб " + type.name + " восстановлен на точке " + mobPoint);
         final Entity finalMob = mob;
+        // Восстановление после рестарта: анимацию входа не играем, моб просто стоит.
+        attachBaseModel(finalMob, type, false);
         Bukkit.getScheduler().runTaskLater(this, () -> {
             if (finalMob != null && !finalMob.isDead()) {
                 disableMobPhysics(finalMob);
@@ -5927,6 +6003,9 @@ private boolean isBaseMob(Entity entity) {
         for (Map.Entry<Entity, String> entry : new HashMap<>(entityToPointMap).entrySet()) {
             if (!entry.getValue().equals(mobPoint)) continue;
             Entity mob = entry.getKey();
+            // Модель снимаем до всего остального: после выхода из entityToPointMap
+            // моб пропадёт из sweep-таска, и рига убрать станет некому.
+            if (mob != null && BaseModelHook.hasModel(mob)) BaseModelHook.detach(mob);
             boolean isLB = mob != null &&
                     (mob.getScoreboardTags().contains("LUCKY_BLOCK") ||
                      luckyBlockTags.containsKey(mob));

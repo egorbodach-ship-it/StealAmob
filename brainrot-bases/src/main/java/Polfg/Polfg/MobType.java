@@ -109,6 +109,15 @@ public enum MobType {
     public boolean isGod() {
         return rarity == Rarity.BRAINROT_GOD;
     }
+    /**
+     * Id блюпринта ModelEngine, или null если моб ванильный.
+     * Имя = файл в plugins/ModelEngine/blueprints без расширения; должно
+     * совпадать с тем, что отдаёт MobData.modelEngineBlueprint() в спавнере,
+     * иначе купленный моб на базе будет выглядеть иначе, чем на конвейере.
+     */
+    public String modelEngineBlueprint() {
+        return (this == SAMOVARUS) ? "samovarus_maximus" : null;
+    }
     public boolean isLuckyBlock() {
         return this == SPONGE;
     }

@@ -90,6 +90,10 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     // мифического не получают, при остановке ивента убираются вместе со своими мобами.
     private final Set<String> eventConveyorIds = new HashSet<>();
 
+    // Множитель ивента «2x Удача». 1.0 — обычные шансы. Держим только в памяти,
+    // чтобы падение сервера не оставило шансы перекошенными навсегда.
+    private double luckMultiplier = 1.0;
+
     private static BrainrotSpawner instance;
 
     private final Map<Entity, List<ArmorStand>> mobNameTags = new HashMap<>();
@@ -712,17 +716,78 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
     private Rarity selectRarity() {
         double totalChance = 0;
         for (Rarity r : Rarity.values()) {
-            if (r.chance > 0 && hasMobs(r)) totalChance += r.chance;
+            if (r.chance > 0 && hasMobs(r)) totalChance += effectiveRarityChance(r);
         }
         if (totalChance <= 0) return Rarity.COMMON;
         double rand = random.nextDouble() * totalChance;
         double cumulative = 0;
         for (Rarity r : Rarity.values()) {
             if (r.chance <= 0 || !hasMobs(r)) continue;
-            cumulative += r.chance;
+            cumulative += effectiveRarityChance(r);
             if (rand <= cumulative) return r;
         }
         return Rarity.COMMON;
+    }
+
+    /**
+     * Шанс редкости с поправкой на ивент «2x Удача».
+     *
+     * Умножаются только Легендарный и выше; отобранные проценты снимаются с
+     * Обычного, а Редкий и Эпический не двигаются — так сетка остаётся ровно 100
+     * и середина таблицы не перекашивается. Гаранты множитель не трогает: они
+     * живут на своих таймерах, это отдельное решение по балансу.
+     *
+     * Поле chance в enum'е final и общее для всех дорожек, поэтому правим не его,
+     * а результат — иначе ивент пришлось бы «откатывать» и любой сбой оставил бы
+     * сервер с перекошенными шансами навсегда.
+     */
+    private double effectiveRarityChance(Rarity r) {
+        if (luckMultiplier <= 1.0) return r.chance;
+        if (isLuckBoosted(r)) return r.chance * luckMultiplier;
+        if (r == Rarity.COMMON) {
+            double extra = 0;
+            for (Rarity b : Rarity.values()) {
+                if (b.chance > 0 && isLuckBoosted(b) && hasMobs(b)) {
+                    extra += b.chance * (luckMultiplier - 1.0);
+                }
+            }
+            // Обычный никогда не уходит в ноль: иначе при большом множителе
+            // конвейер целиком превратился бы в легендарки.
+            return Math.max(1.0, r.chance - extra);
+        }
+        return r.chance;
+    }
+
+    /** Тиры, которые усиливает «2x Удача». */
+    private boolean isLuckBoosted(Rarity r) {
+        return r == Rarity.LEGENDARY || r == Rarity.MYTHICAL
+                || r == Rarity.BRAINROT_GOD || r == Rarity.SECRET;
+    }
+
+    // ===== API для BrainrotEvents: ивент «2x Удача» =====
+
+    /**
+     * Включает множитель удачи. 1.0 — обычные шансы. Значение только в памяти:
+     * если сервер упадёт с активным ивентом, после старта шансы снова обычные,
+     * и чинить конфиг руками не придётся.
+     */
+    public boolean setLuckMultiplier(double multiplier) {
+        double m = Math.max(1.0, Math.min(10.0, multiplier));
+        luckMultiplier = m;
+        getLogger().info("[BRAINROT] Множитель удачи: ×" + String.format(Locale.US, "%.2f", m)
+                + " (Обычный " + String.format(Locale.US, "%.2f", effectiveRarityChance(Rarity.COMMON))
+                + "%, Легендарный " + String.format(Locale.US, "%.2f", effectiveRarityChance(Rarity.LEGENDARY))
+                + "%, Мифический " + String.format(Locale.US, "%.2f", effectiveRarityChance(Rarity.MYTHICAL)) + "%)");
+        return true;
+    }
+
+    public void clearLuckMultiplier() {
+        if (luckMultiplier > 1.0) getLogger().info("[BRAINROT] Множитель удачи снят, шансы обычные.");
+        luckMultiplier = 1.0;
+    }
+
+    public double getLuckMultiplier() {
+        return luckMultiplier;
     }
 
     private MobData selectMobFromRarity(Rarity rarity) {
@@ -1206,11 +1271,19 @@ public class BrainrotSpawner extends JavaPlugin implements Listener {
                 // Возврат в walk строго через loop() (force=true): пока spawn не
                 // отпустил кости, мягкий запрос ME игнорирует, и самовар доезжает
                 // до базы застывшим столбом.
-                ModelEngineHook.playForced(mob, "spawn");
+                //
+                // Первую анимацию НЕ дёргаем в тике attach: ME доводит рига до
+                // готовности в своём тике, и запрос в том же тике попадал в гонку —
+                // успел ME тикнуть после нас, анимация вставала, не успел — молча
+                // терялась. Отсюда и «после перезагрузки сервера работает, потом
+                // нет»: порядок задач в планировщике при старте другой.
                 final Entity meMob = mob;
                 Bukkit.getScheduler().runTaskLater(this, () -> {
+                    if (meMob.isValid() && !meMob.isDead()) ModelEngineHook.playForced(meMob, "spawn");
+                }, 2L);
+                Bukkit.getScheduler().runTaskLater(this, () -> {
                     if (meMob.isValid() && !meMob.isDead()) ModelEngineHook.loop(meMob, "walk");
-                }, 32L);
+                }, 34L);
             }
             if (selectedMob == MobData.ENDER_DRAGON) {
                 // Ставим разворот в тот же тик, что и спавн: клиент получит его сразу
