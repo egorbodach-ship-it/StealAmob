@@ -7056,6 +7056,16 @@ private boolean isBaseMob(Entity entity) {
                     world.spawnParticle(Particle.ITEM_SLIME, p.clone().add(0, 0.2, 0), 2, 0.2, 0.15, 0.2, 0.0);
                 }
             }
+            case ALIEN -> {
+                // Зелёное свечение — след луча НЛО.
+                if (tick % 4 == 0) {
+                    world.spawnParticle(Particle.DUST, p, 3, 0.28, 0.3, 0.28, 0,
+                            new Particle.DustOptions(org.bukkit.Color.fromRGB(40, 220, 60), 1.0f));
+                }
+                if (tick % 12 == 0) {
+                    world.spawnParticle(Particle.END_ROD, p.clone().add(0, 0.4, 0), 1, 0.15, 0.2, 0.15, 0.0);
+                }
+            }
             case RAINBOW -> {
                 if (tick % 2 == 0) {
                     org.bukkit.Color[] colors = {
@@ -7158,6 +7168,16 @@ private boolean isBaseMob(Entity entity) {
                 }
                 if (tick % 14 == 0) {
                     world.spawnParticle(Particle.ITEM_SLIME, p.clone().add(0, 0.2, 0), 2, 0.2, 0.15, 0.2, 0.0);
+                }
+            }
+            case ALIEN -> {
+                // Зелёное свечение — след луча НЛО.
+                if (tick % 4 == 0) {
+                    world.spawnParticle(Particle.DUST, p, 3, 0.28, 0.3, 0.28, 0,
+                            new Particle.DustOptions(org.bukkit.Color.fromRGB(40, 220, 60), 1.0f));
+                }
+                if (tick % 12 == 0) {
+                    world.spawnParticle(Particle.END_ROD, p.clone().add(0, 0.4, 0), 1, 0.15, 0.2, 0.15, 0.0);
                 }
             }
             case RAINBOW -> {
@@ -9159,9 +9179,12 @@ public List<String> getMobPoints(String baseName) {
         //  • точка не принадлежит текущей базе — не хватило слотов при переезде
         //    или это точка второго этажа, а этаж сейчас снят;
         //  • точка занята анимацией спавна (лаки-блок, гнилоход) и сущность
-        //    ещё не зарегистрирована в entityToPointMap.
-        // Раньше такие мобы сохранение просто удаляло. Теперь переносим как есть —
-        // они вернутся, когда точка появится или анимация закончится.
+        //    ещё не зарегистрирована в entityToPointMap;
+        //  • сущность вообще не появилась: мир или чанк не были готовы, спавн упал
+        //    с исключением, колбэк восстановления не доехал. Раньше такой моб
+        //    молча выпадал из файла НАВСЕГДА — это и была «мобы иногда пропадают».
+        // Теперь переносим как есть: моб вернётся, когда точка освободится,
+        // анимация закончится или восстановление доедет.
         List<SavedMobData> carried = new ArrayList<>();
         if (previous != null) {
             Set<String> livePoints = new HashSet<>();
@@ -9169,9 +9192,12 @@ public List<String> getMobPoints(String baseName) {
             for (SavedMobData sm : previous) {
                 if (sm == null || sm.mobPoint == null || sm.mobType == null) continue;
                 if (livePoints.contains(sm.mobPoint)) continue;
-                if (!basePoints.contains(sm.mobPoint) || animatingPoints.contains(sm.mobPoint)) {
-                    carried.add(sm);
-                }
+                // Единственный случай, когда моба правда надо забыть, — его точка
+                // принадлежит базе, свободна, не анимируется, и на ней ничего нет
+                // ПОТОМУ ЧТО моба забрали (продали, украли, перерождение). Такие
+                // пути сами чистят savedPlayerMobs/секцию, поэтому в previous его
+                // уже нет. Всё остальное — потеря данных, и мы её не допускаем.
+                carried.add(sm);
             }
         }
         if (live.isEmpty() && carried.isEmpty() && previous != null && !previous.isEmpty()) {

@@ -16,7 +16,9 @@ enum Mutation {
     METEOR("Метеоритный", "§c", 4.0),
     EXPLOSIVE("Взрывной", "§a", 3.5),
     // Бабл-гам машина: моб зависал в пузыре над конвейером. Множитель как у METEOR.
-    BUBBLEGUM("Баблгамовый", "§d", 4.0);
+    BUBBLEGUM("Баблгамовый", "§d", 4.0),
+    // НЛО: моба поднимало лучом. Множитель тот же, что в спавнере (4.5).
+    ALIEN("Инопланетный", "§2", 4.5);
     final String displayName;
     final String format;
     double incomeMultiplier;
@@ -27,7 +29,7 @@ enum Mutation {
     }
 
     /** Мутации, которые стакаются поверх базовой (SNOWY хранится отдельным флагом, см. isSnowy). */
-    static final List<Mutation> STACKABLE = Arrays.asList(ELECTRIC, METEOR, EXPLOSIVE, BUBBLEGUM);
+    static final List<Mutation> STACKABLE = Arrays.asList(ELECTRIC, METEOR, EXPLOSIVE, BUBBLEGUM, ALIEN);
 
     static Mutation fromEntity(Entity entity) {
         if (entity == null) return NONE;

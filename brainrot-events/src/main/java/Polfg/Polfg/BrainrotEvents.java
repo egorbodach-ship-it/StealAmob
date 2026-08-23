@@ -202,6 +202,22 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private boolean autoEnabled = false;
     private int autoIntervalMinutes = 20;
     private int autoMaxActive = 2;
+    /** Разброс вокруг интервала, чтобы ивент не приходил ровно в 00 минут каждый час. */
+    private int autoSpreadMinutes = 10;
+    /** Не повторять предыдущий ивент, пока в пуле есть другие варианты. */
+    private boolean autoAvoidRepeat = true;
+    /** Ждать ли игроков на спавне. По умолчанию нет: ивент идёт строго по расписанию. */
+    private boolean autoRequirePlayers = false;
+    /** За сколько секунд до старта предупредить игроков в чате. 0 — без предупреждения. */
+    private int autoWarningSeconds = 30;
+    private EventType lastAutoType;
+    /** Когда планировщик собирается запустить следующий ивент (для /brainrotevent status). */
+    private long autoNextRunMillis = 0L;
+    /** Задача обратного отсчёта между предупреждением и самим запуском. */
+    private BukkitTask autoWarnTask;
+    /** Что именно объявлено игрокам, пока идёт отсчёт (null — отсчёта нет). */
+    private EventType autoPendingType;
+    private long autoPendingStartMillis = 0L;
     private boolean weatherEnabled = true;
     private int weatherDuration = 180;
     private int weatherStrikeInterval = 60;
@@ -301,6 +317,14 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private double ufoHoldMaxSeconds = 5.0;
     private double ufoCooldownSeconds = 15.0;
     private int ufoMaxBeams = 2;
+    /** Персональный кулдаун моба: пока он идёт, этого моба не берёт ни одна тарелка. */
+    private double ufoMobCooldownSeconds = 45.0;
+    /** Лимит захватов на один ивент — иначе «Инопланетный» станет у всего конвейера. */
+    private int ufoMaxAbductions = 12;
+    /** Минимальная дистанция между тарелками по XZ: не дают слететься в одну точку. */
+    private double ufoSeparation = 6.0;
+    /** Как часто (тиков) тарелка пересчитывает цель. Поиск идёт рефлексией — дорого. */
+    private int ufoHuntInterval = 10;
     private static final String UFO_TAG = "BRAINROT_UFO";
     private String regionName = "spawn";
     private double regionPadding = 8;
@@ -349,6 +373,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     @Override
     public void onDisable() {
         try { stopAllEvents(true); } catch (Throwable ignored) {}
+        try { cancelAutoTasks(); } catch (Throwable ignored) {}
         try { Bukkit.getScheduler().cancelTasks(this); } catch (Throwable __t) {}
         try { org.bukkit.event.HandlerList.unregisterAll((org.bukkit.plugin.Plugin) this); } catch (Throwable __t) {}
         stopAllLoops();
@@ -392,10 +417,20 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         FileConfiguration cfg = getConfig();
         boolean changed = false;
         changed |= def("events.world", "");
-        changed |= def("events.auto.enabled", false);
-        changed |= def("events.auto.interval-minutes", 20);
+        changed |= def("events.auto.enabled", true);
+        changed |= def("events.auto.interval-minutes", 60);
+        // Разброс времени вокруг интервала: ивент придёт не ровно в час, а ±этих минут.
+        // Ровный таймер игроки быстро запоминают и ждут у конвейера.
+        changed |= def("events.auto.spread-minutes", 10);
         // Сколько ивентов авто-планировщик может держать одновременно (ивенты стакаются).
-        changed |= def("events.auto.max-active", 2);
+        changed |= def("events.auto.max-active", 1);
+        // Не запускать тот же ивент, что был прошлым, пока в пуле есть другие.
+        changed |= def("events.auto.avoid-repeat", true);
+        // false = ивент приходит по расписанию даже на пустом сервере. Если поставить true,
+        // планировщик будет ждать хотя бы одного игрока в мире ивентов и пробовать раз в 2 минуты.
+        changed |= def("events.auto.require-players", false);
+        // За сколько секунд до старта предупредить игроков. 0 — запускать без предупреждения.
+        changed |= def("events.auto.warning-seconds", 30);
         changed |= def("events.bad-weather.enabled", true);
         changed |= def("events.bad-weather.duration-seconds", 180);
         changed |= def("events.bad-weather.strike-interval-ticks", 60);
@@ -429,8 +464,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         // «3 Тропы»: стена спавна меняется на схему с проходами, под тропами кладётся бетон.
         changed |= def("events.three-roads.enabled", true);
         changed |= def("events.three-roads.duration-seconds", 180);
-        // Ивент стакается с остальными, но в авто-ротацию не идёт: запускаем руками.
-        changed |= def("events.three-roads.include-in-auto", false);
+        // Ивент стакается с остальными и участвует в авто-ротации (можно выключить тут).
+        changed |= def("events.three-roads.include-in-auto", true);
         changed |= def("events.three-roads.schematic-open", "3road");
         changed |= def("events.three-roads.schematic-close", "roadorig");
         changed |= def("events.three-roads.wall.pos1", "-60 51 76");
@@ -458,12 +493,12 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         // «2x Удача»: множитель шансов в спавнере на Легендарный и выше.
         changed |= def("events.lucky-2x.enabled", true);
         changed |= def("events.lucky-2x.duration-seconds", 300);
-        changed |= def("events.lucky-2x.include-in-auto", false);
+        changed |= def("events.lucky-2x.include-in-auto", true);
         changed |= def("events.lucky-2x.multiplier", 2.0);
         // «Бабл Гам Машина»: схема встаёт над конвейером, моб с шансом залипает в пузыре.
         changed |= def("events.gum-machine.enabled", true);
         changed |= def("events.gum-machine.duration-seconds", 300);
-        changed |= def("events.gum-machine.include-in-auto", false);
+        changed |= def("events.gum-machine.include-in-auto", true);
         changed |= def("events.gum-machine.schematic", "gumbubble");
         changed |= def("events.gum-machine.region.pos1", "-44 54 68");
         changed |= def("events.gum-machine.region.pos2", "-40 47 62");
@@ -481,7 +516,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         // «НЛО»: пять тарелок висят над спавном, летают по кругу и лучом забирают мобов.
         changed |= def("events.ufo.enabled", true);
         changed |= def("events.ufo.duration-seconds", 300);
-        changed |= def("events.ufo.include-in-auto", false);
+        changed |= def("events.ufo.include-in-auto", true);
         // Блюпринт ModelEngine (plugins/ModelEngine/blueprints/<id>.bbmodel).
         changed |= def("events.ufo.blueprint", "ufo_abductor");
         // Точки появления. Первые две — заданные вручную, остальные рядом.
@@ -505,6 +540,17 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         changed |= def("events.ufo.cooldown-seconds", 15.0);
         // Сколько мобов может висеть в лучах одновременно.
         changed |= def("events.ufo.max-beams", 2);
+        // Сколько секунд конкретного моба нельзя брать лучом снова (даже другой тарелкой).
+        changed |= def("events.ufo.mob-cooldown-seconds", 45.0);
+        // Максимум захватов за один ивент: без этого за 5 минут «инопланетным» станет
+        // половина конвейера, и мутация перестанет что-то значить.
+        changed |= def("events.ufo.max-abductions", 12);
+        // Насколько близко тарелки подпускают друг друга. Из-за охоты за одним мобом
+        // они слетались в одну точку и выглядели одной кашей.
+        changed |= def("events.ufo.separation", 6.0);
+        // Как часто тарелка пересчитывает, за кем лететь (тиков). Каждый тик — это
+        // рефлексия по всем мобам спавнера, дорого и незаметно.
+        changed |= def("events.ufo.hunt-interval-ticks", 10);
         // Одноразовая правка уже записанного конфига: в первой версии тарелки висели на
         // 6 блоках и «смотрели» на 5 — слишком высоко и узко, луч почти не находил мобов.
         // Трогаем только значения, которые никто не менял вручную.
@@ -515,6 +561,29 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             }
             if (Math.abs(cfg.getDouble("events.ufo.beam-range", 7.0) - 5.0) < 1e-6) {
                 cfg.set("events.ufo.beam-range", 7.0);
+            }
+            changed = true;
+        }
+        // Третья версия: тарелкам урезан радиус (12 блоков на пять точек в 8 блоках друг
+        // от друга = полностью перекрытые зоны и куча в центре).
+        if (cfg.getInt("events.ufo.config-version", 1) < 3) {
+            cfg.set("events.ufo.config-version", 3);
+            if (Math.abs(cfg.getDouble("events.ufo.roam-radius", 7.0) - 12.0) < 1e-6) {
+                cfg.set("events.ufo.roam-radius", 7.0);
+            }
+            changed = true;
+        }
+        // Авто-ротация: пользователь просил «раз в час случайный ивент», поэтому один
+        // раз переводим уже записанный конфиг на часовой интервал и пускаем в пул всё.
+        if (cfg.getInt("events.auto.config-version", 1) < 2) {
+            cfg.set("events.auto.config-version", 2);
+            if (!cfg.getBoolean("events.auto.enabled", true)) cfg.set("events.auto.enabled", true);
+            if (cfg.getInt("events.auto.interval-minutes", 60) == 20) cfg.set("events.auto.interval-minutes", 60);
+            if (cfg.getInt("events.auto.max-active", 1) == 2) cfg.set("events.auto.max-active", 1);
+            for (String key : new String[]{"events.three-roads.include-in-auto",
+                    "events.lucky-2x.include-in-auto", "events.gum-machine.include-in-auto",
+                    "events.ufo.include-in-auto"}) {
+                if (!cfg.getBoolean(key, false)) cfg.set(key, true);
             }
             changed = true;
         }
@@ -553,9 +622,18 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         if (changed) saveConfig();
 
         eventsWorldName      = cfg.getString("events.world", "");
-        autoEnabled          = cfg.getBoolean("events.auto.enabled", false);
-        autoIntervalMinutes  = Math.max(1, cfg.getInt("events.auto.interval-minutes", 20));
-        autoMaxActive        = Math.max(1, cfg.getInt("events.auto.max-active", 2));
+        autoEnabled          = cfg.getBoolean("events.auto.enabled", true);
+        autoIntervalMinutes  = Math.max(1, cfg.getInt("events.auto.interval-minutes", 60));
+        autoMaxActive        = Math.max(1, cfg.getInt("events.auto.max-active", 1));
+        autoSpreadMinutes    = Math.max(0, cfg.getInt("events.auto.spread-minutes", 10));
+        autoAvoidRepeat      = cfg.getBoolean("events.auto.avoid-repeat", true);
+        autoRequirePlayers   = cfg.getBoolean("events.auto.require-players", false);
+        // Предупреждение не может быть длиннее самого интервала — иначе отсчёт наложится
+        // на следующую попытку планировщика.
+        autoWarningSeconds   = Math.max(0, Math.min(autoIntervalMinutes * 60 - 5,
+                cfg.getInt("events.auto.warning-seconds", 30)));
+        // Разброс больше половины интервала превратил бы «раз в час» в лотерею.
+        if (autoSpreadMinutes > autoIntervalMinutes / 2) autoSpreadMinutes = autoIntervalMinutes / 2;
         weatherEnabled       = cfg.getBoolean("events.bad-weather.enabled", true);
         weatherDuration      = Math.max(5, cfg.getInt("events.bad-weather.duration-seconds", 180));
         weatherStrikeInterval= Math.max(5, cfg.getInt("events.bad-weather.strike-interval-ticks", 60));
@@ -588,7 +666,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         creeperRespawnDelay  = Math.max(10, cfg.getInt("events.creeper-party.respawn-delay-ticks", 60));
         roadsEnabled         = cfg.getBoolean("events.three-roads.enabled", true);
         roadsDuration        = Math.max(5, cfg.getInt("events.three-roads.duration-seconds", 180));
-        roadsIncludeInAuto   = cfg.getBoolean("events.three-roads.include-in-auto", false);
+        roadsIncludeInAuto   = cfg.getBoolean("events.three-roads.include-in-auto", true);
         roadsSchemOpen       = cfg.getString("events.three-roads.schematic-open", "3road");
         roadsSchemClose      = cfg.getString("events.three-roads.schematic-close", "roadorig");
         roadsWallPos1        = cfg.getString("events.three-roads.wall.pos1", "-60 51 76");
@@ -611,11 +689,11 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         roadsLaneCooldown    = Math.max(0L, cfg.getLong("events.three-roads.lane-cooldown-ticks", 0L));
         luckEnabled          = cfg.getBoolean("events.lucky-2x.enabled", true);
         luckDuration         = Math.max(5, cfg.getInt("events.lucky-2x.duration-seconds", 300));
-        luckIncludeInAuto    = cfg.getBoolean("events.lucky-2x.include-in-auto", false);
+        luckIncludeInAuto    = cfg.getBoolean("events.lucky-2x.include-in-auto", true);
         luckMultiplier       = Math.max(1.0, Math.min(10.0, cfg.getDouble("events.lucky-2x.multiplier", 2.0)));
         gumEnabled           = cfg.getBoolean("events.gum-machine.enabled", true);
         gumDuration          = Math.max(5, cfg.getInt("events.gum-machine.duration-seconds", 300));
-        gumIncludeInAuto     = cfg.getBoolean("events.gum-machine.include-in-auto", false);
+        gumIncludeInAuto     = cfg.getBoolean("events.gum-machine.include-in-auto", true);
         gumSchematic         = cfg.getString("events.gum-machine.schematic", "gumbubble");
         gumPos1              = cfg.getString("events.gum-machine.region.pos1", "-44 54 68");
         gumPos2              = cfg.getString("events.gum-machine.region.pos2", "-40 47 62");
@@ -627,12 +705,12 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         gumCooldownSeconds   = Math.max(0.0, cfg.getDouble("events.gum-machine.cooldown-seconds", 8.0));
         ufoEnabled           = cfg.getBoolean("events.ufo.enabled", true);
         ufoDuration          = Math.max(5, cfg.getInt("events.ufo.duration-seconds", 300));
-        ufoIncludeInAuto     = cfg.getBoolean("events.ufo.include-in-auto", false);
+        ufoIncludeInAuto     = cfg.getBoolean("events.ufo.include-in-auto", true);
         ufoBlueprint         = cfg.getString("events.ufo.blueprint", "ufo_abductor");
         ufoSpawnPoints       = new ArrayList<>(cfg.getStringList("events.ufo.spawn-points"));
         ufoHoverHeight       = Math.max(0.0, Math.min(24.0, cfg.getDouble("events.ufo.hover-height", 3.0)));
         if (ufoSpawnPoints.isEmpty()) ufoSpawnPoints.add("-17 52 69");
-        ufoRoamRadius        = Math.max(2.0, cfg.getDouble("events.ufo.roam-radius", 12.0));
+        ufoRoamRadius        = Math.max(2.0, cfg.getDouble("events.ufo.roam-radius", 7.0));
         ufoSpeed             = Math.max(0.02, Math.min(0.6, cfg.getDouble("events.ufo.speed", 0.09)));
         ufoBeamRange         = Math.max(1.0, cfg.getDouble("events.ufo.beam-range", 7.0));
         ufoChance            = Math.max(0.0, Math.min(100.0, cfg.getDouble("events.ufo.chance-percent", 12.0)));
@@ -642,6 +720,11 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         ufoHoldMaxSeconds    = Math.max(ufoHoldMinSeconds, cfg.getDouble("events.ufo.hold-seconds-max", 5.0));
         ufoCooldownSeconds   = Math.max(0.0, cfg.getDouble("events.ufo.cooldown-seconds", 15.0));
         ufoMaxBeams          = Math.max(1, cfg.getInt("events.ufo.max-beams", 2));
+        ufoMobCooldownSeconds= Math.max(0.0, cfg.getDouble("events.ufo.mob-cooldown-seconds", 45.0));
+        // 0 = без лимита, но по умолчанию лимит есть.
+        ufoMaxAbductions     = Math.max(0, cfg.getInt("events.ufo.max-abductions", 12));
+        ufoSeparation        = Math.max(0.0, Math.min(ufoRoamRadius, cfg.getDouble("events.ufo.separation", 6.0)));
+        ufoHuntInterval      = Math.max(1, cfg.getInt("events.ufo.hunt-interval-ticks", 10));
         regionName           = cfg.getString("events.region.worldguard-region", "spawn");
         regionPadding        = Math.max(0, cfg.getDouble("events.region.padding", 8));
         manualMinX           = cfg.getDouble("events.region.min-x", 0);
@@ -984,43 +1067,247 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         }
     }
 
+    /**
+     * Авто-ротация ивентов. Раньше это был {@code runTaskTimer} с фиксированным периодом:
+     * ивент приходил ровно в одно и то же время, а если момент был неудачным (лимит активных,
+     * тропы ещё разбираются) — час пропадал целиком. Теперь задача планирует себя сама:
+     * интервал ± разброс, за warning-seconds до старта объявление в чат, а при неудачной
+     * попытке — короткий повтор через две минуты.
+     */
     private void startAutoScheduler() {
-        if (autoTask != null) { try { autoTask.cancel(); } catch (Throwable ignored) {} autoTask = null; }
+        cancelAutoTasks();
+        autoNextRunMillis = 0L;
         if (!autoEnabled) return;
-        long period = autoIntervalMinutes * 60L * 20L;
+        scheduleNextAuto(nextAutoDelayTicks());
+    }
+
+    /** Снимает и таймер интервала, и незакрытый обратный отсчёт предупреждения. */
+    private void cancelAutoTasks() {
+        if (autoTask != null) { try { autoTask.cancel(); } catch (Throwable ignored) {} autoTask = null; }
+        if (autoWarnTask != null) { try { autoWarnTask.cancel(); } catch (Throwable ignored) {} autoWarnTask = null; }
+        // Ивент уже объявлен в чате — молча его снимать нельзя, игроки будут ждать зря.
+        // На выключении плагина сообщение не нужно: сервер и так гасится.
+        if (autoPendingType != null && isEnabled()) {
+            broadcastEvents("§7✦ Объявленный ивент отменён.");
+        }
+        autoPendingType = null;
+        autoPendingStartMillis = 0L;
+    }
+
+    /** Интервал со случайным сдвигом ±spread-minutes, но не меньше минуты. */
+    private long nextAutoDelayTicks() {
+        long base = autoIntervalMinutes * 60L * 20L;
+        long spread = autoSpreadMinutes * 60L * 20L;
+        long jitter = spread <= 0 ? 0 : (long) (random.nextDouble() * 2.0 * spread) - spread;
+        return Math.max(20L * 60L, base + jitter);
+    }
+
+    /**
+     * @param delayTicks сколько ждать до самого ивента. Предупреждение вычитается изнутри:
+     *                   объявляем за warning-seconds ДО этого момента, чтобы часовой ритм
+     *                   не уползал на полминуты с каждым кругом.
+     */
+    private void scheduleNextAuto(long delayTicks) {
+        if (autoTask != null) { try { autoTask.cancel(); } catch (Throwable ignored) {} autoTask = null; }
+        if (!autoEnabled) { autoNextRunMillis = 0L; return; }
+        long fireTicks = Math.max(1L, delayTicks);
+        // На коротком повторе (2 минуты) длинное предупреждение не влезает: обрезаем его
+        // по остатку ожидания, иначе отсчёт стартовал бы позже самого расчётного момента.
+        final int warnSeconds = (int) Math.min(autoWarningSeconds, Math.max(0L, fireTicks / 20L - 1L));
+        long announceTicks = Math.max(1L, fireTicks - warnSeconds * 20L);
+        autoNextRunMillis = System.currentTimeMillis() + fireTicks * 50L;
         autoTask = new BukkitRunnable() {
             @Override public void run() {
-                if (sessions.size() >= autoMaxActive) return;
-                World w = resolveWorld();
-                if (w == null || w.getPlayers().isEmpty()) return;
-                List<EventType> pool = new ArrayList<>();
-                if (weatherEnabled && !isActive(EventType.BAD_WEATHER)) pool.add(EventType.BAD_WEATHER);
-                if (meteorEnabled && !isActive(EventType.METEOR_SHOWER)) pool.add(EventType.METEOR_SHOWER);
-                if (creeperEnabled && !isActive(EventType.CREEPER_PARTY)) pool.add(EventType.CREEPER_PARTY);
-                // «3 Тропы» по умолчанию вне ротации: ивент перестраивает карту,
-                // поэтому запускается руками. Включается events.three-roads.include-in-auto.
-                if (roadsEnabled && roadsIncludeInAuto && !roadsBusy && !isActive(EventType.THREE_ROADS)) {
-                    pool.add(EventType.THREE_ROADS);
+                autoTask = null;
+                if (!autoEnabled) { autoNextRunMillis = 0L; return; }
+                try {
+                    EventType picked = pickAutoEvent();
+                    if (picked == null) {
+                        // Момент неудачный (лимит активных / карта перестраивается / пул пуст) —
+                        // не теряем весь интервал, а пробуем через две минуты.
+                        scheduleNextAuto(20L * 120L);
+                        return;
+                    }
+                    if (warnSeconds <= 0) { fireAutoEvent(picked); return; }
+                    startAutoCountdown(picked, warnSeconds);
+                } catch (Throwable t) {
+                    // Планировщик держится на цепочке «задача планирует следующую»: без catch
+                    // один сбой (нет WorldEdit, чужой плагин бросил из слушателя) навсегда
+                    // обрывает авто-ивенты до перезапуска сервера.
+                    getLogger().warning("Авто-ивент сорвался при выборе: " + t);
+                    scheduleNextAuto(20L * 120L);
                 }
-                // «2x Удача» тоже вне ротации по умолчанию — это подарок, а не погода.
-                // Включается events.lucky-2x.include-in-auto.
-                if (luckEnabled && luckIncludeInAuto && !isActive(EventType.LUCKY_2X)) {
-                    pool.add(EventType.LUCKY_2X);
-                }
-                // Машина тоже вне ротации: она меняет карту, как и тропы.
-                // Включается events.gum-machine.include-in-auto.
-                if (gumEnabled && gumIncludeInAuto && !gumBusy && !isActive(EventType.GUM_MACHINE)) {
-                    pool.add(EventType.GUM_MACHINE);
-                }
-                // НЛО тоже руками: тарелки видны только с ModelEngine, и лучше
-                // включать их осознанно. events.ufo.include-in-auto.
-                if (ufoEnabled && ufoIncludeInAuto && !isActive(EventType.UFO)) {
-                    pool.add(EventType.UFO);
-                }
-                if (pool.isEmpty()) return;
-                startEvent(pool.get(random.nextInt(pool.size())), 0, null);
             }
-        }.runTaskTimer(this, period, period);
+        }.runTaskLater(this, announceTicks);
+    }
+
+    /**
+     * Объявляет ивент и ведёт отсчёт до запуска. Отсчёт секундный, а не одна отложенная
+     * задача, чтобы на середине напомнить опоздавшим и чтобы /brevent status мог показать
+     * точный остаток.
+     */
+    private void startAutoCountdown(EventType picked, int warnSeconds) {
+        final int total = warnSeconds;
+        autoPendingType = picked;
+        autoPendingStartMillis = System.currentTimeMillis() + total * 1000L;
+        announceAutoEvent(picked, total);
+        autoWarnTask = new BukkitRunnable() {
+            int left = total;
+            @Override public void run() {
+                try {
+                    if (!autoEnabled) {
+                        clearPending();
+                        cancel();
+                        return;
+                    }
+                    left--;
+                    // Напоминание на десятой секунде: за 30 секунд игрок успевает добежать
+                    // до спавна, но короткий отсчёт вторым сообщением только зашумит чат.
+                    if (left == 10 && total > 15) { announceAutoEvent(picked, 10); return; }
+                    if (left > 0) return;
+                    clearPending();
+                    cancel();
+                    fireAutoEvent(picked);
+                } catch (Throwable t) {
+                    // Как и у таймера интервала: оборвать цепочку нельзя, иначе ивентов
+                    // больше не будет до /brevent reload.
+                    clearPending();
+                    try { cancel(); } catch (Throwable ignored) {}
+                    getLogger().warning("Отсчёт авто-ивента сорвался: " + t);
+                    scheduleNextAuto(20L * 120L);
+                }
+            }
+
+            private void clearPending() {
+                autoWarnTask = null;
+                autoPendingType = null;
+                autoPendingStartMillis = 0L;
+            }
+        }.runTaskTimer(this, 20L, 20L);
+    }
+
+    /**
+     * Запускает объявленный ивент. За время отсчёта расклад мог поменяться: админ занял лимит
+     * своим ивентом, спавн опустел, тропы полезли перестраиваться. Тогда берём замену и честно
+     * говорим об этом — иначе объявление разошлось бы с тем, что видят игроки.
+     */
+    private void fireAutoEvent(EventType picked) {
+        EventType type = picked;
+        boolean stillFine = canAutoStart(type)
+                && sessions.size() < autoMaxActive
+                && (!autoRequirePlayers || hasEventAudience());
+        if (!stillFine) {
+            // pickAutoEvent сам учитывает и лимит активных, и требование зрителей.
+            EventType replacement = pickAutoEvent();
+            if (replacement == null) {
+                broadcastEvents("§7✦ Ивент отложен, попробуем чуть позже.");
+                scheduleNextAuto(20L * 120L);
+                return;
+            }
+            if (replacement != type) {
+                broadcastEvents("§7✦ Ивент сменился: вместо «" + type.title + "» — "
+                        + replacement.format + replacement.title + "§7.");
+            }
+            type = replacement;
+        }
+        boolean started;
+        try {
+            started = startEvent(type, 0, null);
+        } catch (Throwable t) {
+            getLogger().warning("Авто-ивент " + type.title + " упал при запуске: " + t);
+            started = false;
+        }
+        if (!started) {
+            // startEvent объясняет отказ только вызвавшему, а у авто-запуска его нет —
+            // при этом объявление игрокам уже ушло, поэтому говорим и им.
+            getLogger().warning("Авто-ивент " + type.title + " не запустился, повтор через 2 минуты.");
+            broadcastEvents("§7✦ Ивент отложен, попробуем чуть позже.");
+            scheduleNextAuto(20L * 120L);
+            return;
+        }
+        lastAutoType = type;
+        scheduleNextAuto(nextAutoDelayTicks());
+    }
+
+    /** Можно ли поставить этот ивент в авто-ротацию прямо сейчас. */
+    private boolean canAutoStart(EventType type) {
+        if (type == null || isActive(type)) return false;
+        return switch (type) {
+            case BAD_WEATHER -> weatherEnabled;
+            case METEOR_SHOWER -> meteorEnabled;
+            case CREEPER_PARTY -> creeperEnabled;
+            // «3 Тропы» перестраивают стену схемой: пока прошлая стройка не закончилась
+            // (roadsBusy), второй раз лезть нельзя — получим бетон, который никто не уберёт.
+            case THREE_ROADS -> roadsEnabled && roadsIncludeInAuto && !roadsBusy;
+            case LUCKY_2X -> luckEnabled && luckIncludeInAuto;
+            case GUM_MACHINE -> gumEnabled && gumIncludeInAuto && !gumBusy;
+            // НЛО показывает тарелки только с ModelEngine, но луч и мутация работают и без него.
+            case UFO -> ufoEnabled && ufoIncludeInAuto;
+        };
+    }
+
+    /** Что можно запустить прямо сейчас, или null, если нечего. */
+    private EventType pickAutoEvent() {
+        if (sessions.size() >= autoMaxActive) return null;
+        if (resolveWorld() == null) return null;
+        // По умолчанию расписание важнее зрителей. С require-players: true пустой спавн
+        // означает ивент впустую — частицы, молнии и тики без единого игрока.
+        if (autoRequirePlayers && !hasEventAudience()) return null;
+        List<EventType> pool = new ArrayList<>();
+        for (EventType t : EventType.values()) if (canAutoStart(t)) pool.add(t);
+        if (pool.isEmpty()) return null;
+        // Антиповтор: два одинаковых ивента подряд выглядят как «ничего не поменялось».
+        if (autoAvoidRepeat && lastAutoType != null && pool.size() > 1) pool.remove(lastAutoType);
+        return pool.get(random.nextInt(pool.size()));
+    }
+
+    /** Есть ли кому смотреть ивент в мире ивентов. */
+    private boolean hasEventAudience() {
+        World w = resolveWorld();
+        return w != null && !w.getPlayers().isEmpty();
+    }
+
+    /** Объявление в чат мира ивентов. Нет мира или игроков — просто некому слушать. */
+    private void broadcastEvents(String message) {
+        World w = resolveWorld();
+        if (w == null) return;
+        for (Player p : w.getPlayers()) p.sendMessage(message);
+    }
+
+    private void announceAutoEvent(EventType type, int seconds) {
+        World w = resolveWorld();
+        if (w == null) return;
+        String line = type.format + "✦ Через " + seconds + " " + pluralSeconds(seconds)
+                + " начнётся ивент: " + type.title + "!";
+        for (Player p : w.getPlayers()) {
+            p.sendMessage(line);
+            try { p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 0.8f, 1.4f); }
+            catch (Throwable ignored) {}
+        }
+    }
+
+    /** Русское склонение: 1 секунду, 2 секунды, 5 секунд, 11 секунд. */
+    private static String pluralSeconds(int n) {
+        int mod100 = Math.abs(n) % 100;
+        if (mod100 >= 11 && mod100 <= 14) return "секунд";
+        return switch (mod100 % 10) {
+            case 1 -> "секунду";
+            case 2, 3, 4 -> "секунды";
+            default -> "секунд";
+        };
+    }
+
+    /** Человекочитаемый список того, что вообще может выпасть в авто-ротации. */
+    private String autoPoolLine() {
+        List<String> names = new ArrayList<>();
+        if (weatherEnabled) names.add(EventType.BAD_WEATHER.title);
+        if (meteorEnabled) names.add(EventType.METEOR_SHOWER.title);
+        if (creeperEnabled) names.add(EventType.CREEPER_PARTY.title);
+        if (roadsEnabled && roadsIncludeInAuto) names.add(EventType.THREE_ROADS.title);
+        if (luckEnabled && luckIncludeInAuto) names.add(EventType.LUCKY_2X.title);
+        if (gumEnabled && gumIncludeInAuto) names.add(EventType.GUM_MACHINE.title);
+        if (ufoEnabled && ufoIncludeInAuto) names.add(EventType.UFO.title);
+        return names.isEmpty() ? "пусто" : String.join(", ", names);
     }
     // =========================================================
     // ИВЕНТ 1: ПЛОХАЯ ПОГОДА (молния -> мутация Электрический)
@@ -3063,6 +3350,26 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                     double lm = getSpawnerLuck();
                     sender.sendMessage("§7Множитель удачи в спавнере: §f×" + trimNumber(lm)
                             + (lm > 1.0 ? " §d(ивент идёт)" : " §7(обычные шансы)"));
+                    if (!autoEnabled) {
+                        sender.sendMessage("§7Авто-ивенты: §cвыключены §7(events.auto.enabled)");
+                    } else {
+                        int wait = autoNextRunMillis <= 0 ? -1
+                                : (int) Math.max(0, Math.ceil((autoNextRunMillis - System.currentTimeMillis()) / 1000.0));
+                        sender.sendMessage("§7Авто-ивенты: §aкаждые ~" + autoIntervalMinutes + " мин"
+                                + (autoSpreadMinutes > 0 ? " §7(±" + autoSpreadMinutes + ")" : "")
+                                + " §7| следующий через §f" + (wait < 0 ? "?" : formatTime(wait))
+                                + " §7| в пуле: §f" + autoPoolLine()
+                                + (lastAutoType != null ? " §7| прошлый: §f" + lastAutoType.title : ""));
+                        sender.sendMessage("§7Предупреждение: "
+                                + (autoWarningSeconds > 0 ? "§fза " + autoWarningSeconds + " с" : "§7выключено")
+                                + " §7| пустой спавн: "
+                                + (autoRequirePlayers ? "§eждём игроков" : "§aивент всё равно идёт"));
+                        if (autoPendingType != null) {
+                            int left = (int) Math.max(0, Math.ceil((autoPendingStartMillis - System.currentTimeMillis()) / 1000.0));
+                            sender.sendMessage("§eОбъявлен ивент " + autoPendingType.format + autoPendingType.title
+                                    + " §7— старт через §f" + left + " с");
+                        }
+                    }
                     if (w != null) {
                         double[] box = getRegionBounds(w);
                         sender.sendMessage("§7Область метеоритов: §f" + (box == null ? "не определена"
