@@ -53,6 +53,7 @@ import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.weather.LightningStrikeEvent;
+import org.bukkit.event.world.EntitiesLoadEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
@@ -61,6 +62,7 @@ import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 
 import java.io.File;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -76,7 +78,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * BrainrotEvents — фоновая музыка + четыре ивента.
+ * BrainrotEvents — фоновая музыка + семь ивентов (погода, метеориты, криперы, 3 тропы, 2x удача, бабл гам, НЛО).
  *
  * Ивенты:
  *  • Плохая Погода — босс-бар на время ивента, дождь/гроза, молнии бьют мобов
@@ -161,6 +163,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         final int totalSeconds;
         final long endMillis;
         final List<BukkitTask> tasks = new ArrayList<>();
+        /** true — бар и объявления идут всему серверу, а не только миру ивента. */
+        boolean publicBroadcast = false;
 
         EventSession(EventType type, World world, BossBar bar, int totalSeconds) {
             this.type = type;
@@ -223,10 +227,18 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private int weatherStrikeInterval = 60;
     private double weatherStrikeChance = 0.18;
     private int weatherStrikesPerWave = 1;
+    /** Лимит «Электрических» за ивент (0 = без лимита) — как у метеоритов и НЛО. */
+    private int weatherMaxStrikes = 12;
+    private int weatherStrikesDone;
+    /** В кого молния уже била за этот ивент: повторный удар — пустая трата волны. */
+    private final Set<UUID> weatherStruck = new HashSet<>();
     private boolean meteorEnabled = true;
     private int meteorDuration = 180;
-    private int meteorWaveInterval = 25;
-    private int meteorPerWave = 2;
+    private int meteorWaveInterval = 40;
+    private int meteorPerWave = 1;
+    /** Лимит попаданий за ивент: у НЛО он есть, а тут метеориты сыпались без счёта. */
+    private int meteorMaxImpacts = 12;
+    private int meteorImpactsDone;
     private double meteorSpawnHeight = 28;
     private double meteorHitRadius = 2.5;
     private boolean creeperEnabled = true;
@@ -248,6 +260,9 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private double creeperHitRadius = 2.0;
     private double creeperPlayerKnockback = 1.35;
     private int creeperRespawnDelay = 60;
+    /** Лимит «Взрывных» за ивент (0 = без лимита). */
+    private int creeperMaxMutations = 12;
+    private int creeperMutationsDone;
     // Ивент «3 Тропы»
     private boolean roadsEnabled = true;
     private int roadsDuration = 180;
@@ -325,6 +340,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private double ufoSeparation = 6.0;
     /** Как часто (тиков) тарелка пересчитывает цель. Поиск идёт рефлексией — дорого. */
     private int ufoHuntInterval = 10;
+    /** На сколько радиан за тик курс уводит в сторону: даёт полёт по дугам, а не по прямым. */
+    private double ufoWander = 0.10;
     private static final String UFO_TAG = "BRAINROT_UFO";
     private String regionName = "spawn";
     private double regionPadding = 8;
@@ -363,9 +380,9 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         restoreRoadsAfterCrash();
         // …и если он упал с поставленной бабл-гам машиной — откатить регион по снимку.
         restoreGumAfterCrash();
-        // Тарелки — обычные сущности: если сервер упал с идущим ивентом, они остались
-        // висеть в мире. Убираем по тегу.
-        cleanupStrayUfos();
+        // Тарелки, криперы пати и метеориты — обычные сущности: если сервер упал с идущим
+        // ивентом, они остались в мире (криперы ещё и persistent + неуязвимые). Убираем по тегу.
+        cleanupStrayEventEntities();
         getLogger().info("BrainrotEvents включён. Трек: " + soundKey
                 + ", ивенты: Плохая Погода / Метеоритный Дождь / Крипер Пати / 3 Тропы / 2x Удача / Бабл Гам Машина / НЛО");
     }
@@ -436,10 +453,14 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         changed |= def("events.bad-weather.strike-interval-ticks", 60);
         changed |= def("events.bad-weather.strike-chance", 0.18);
         changed |= def("events.bad-weather.strikes-per-wave", 1);
+        // Сколько мобов максимум получат «Электрического» за ивент (0 — без лимита).
+        changed |= def("events.bad-weather.max-strikes", 12);
         changed |= def("events.meteor-shower.enabled", true);
         changed |= def("events.meteor-shower.duration-seconds", 180);
-        changed |= def("events.meteor-shower.wave-interval-ticks", 25);
-        changed |= def("events.meteor-shower.fireballs-per-wave", 2);
+        changed |= def("events.meteor-shower.wave-interval-ticks", 40);
+        changed |= def("events.meteor-shower.fireballs-per-wave", 1);
+        // Сколько мобов максимум получат «Метеоритного» за один ивент.
+        changed |= def("events.meteor-shower.max-impacts", 12);
         changed |= def("events.meteor-shower.spawn-height", 28);
         changed |= def("events.meteor-shower.hit-radius", 2.5);
         changed |= def("events.creeper-party.enabled", true);
@@ -461,6 +482,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         changed |= def("events.creeper-party.hit-radius", 2.0);
         changed |= def("events.creeper-party.player-knockback", 1.35);
         changed |= def("events.creeper-party.respawn-delay-ticks", 60);
+        // Сколько мобов максимум получат «Взрывного» за ивент (0 — без лимита).
+        changed |= def("events.creeper-party.max-mutations", 12);
         // «3 Тропы»: стена спавна меняется на схему с проходами, под тропами кладётся бетон.
         changed |= def("events.three-roads.enabled", true);
         changed |= def("events.three-roads.duration-seconds", 180);
@@ -551,6 +574,9 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         // Как часто тарелка пересчитывает, за кем лететь (тиков). Каждый тик — это
         // рефлексия по всем мобам спавнера, дорого и незаметно.
         changed |= def("events.ufo.hunt-interval-ticks", 10);
+        // Насколько тарелку «ведёт» в сторону каждый тик (радианы): 0 — полёт строго
+        // прямыми отрезками, как было раньше.
+        changed |= def("events.ufo.wander-radians", 0.10);
         // Одноразовая правка уже записанного конфига: в первой версии тарелки висели на
         // 6 блоках и «смотрели» на 5 — слишком высоко и узко, луч почти не находил мобов.
         // Трогаем только значения, которые никто не менял вручную.
@@ -570,6 +596,18 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             cfg.set("events.ufo.config-version", 3);
             if (Math.abs(cfg.getDouble("events.ufo.roam-radius", 7.0) - 12.0) < 1e-6) {
                 cfg.set("events.ufo.roam-radius", 7.0);
+            }
+            changed = true;
+        }
+        // Метеоритный дождь: 2 фаербола каждые 25 тиков за 180 секунд — это до 288 попыток
+        // мутации на конвейер. Разрежаем волны в уже записанном конфиге.
+        if (cfg.getInt("events.meteor-shower.config-version", 1) < 2) {
+            cfg.set("events.meteor-shower.config-version", 2);
+            if (cfg.getInt("events.meteor-shower.wave-interval-ticks", 40) == 25) {
+                cfg.set("events.meteor-shower.wave-interval-ticks", 40);
+            }
+            if (cfg.getInt("events.meteor-shower.fireballs-per-wave", 1) == 2) {
+                cfg.set("events.meteor-shower.fireballs-per-wave", 1);
             }
             changed = true;
         }
@@ -639,10 +677,12 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         weatherStrikeInterval= Math.max(5, cfg.getInt("events.bad-weather.strike-interval-ticks", 60));
         weatherStrikeChance  = Math.min(1.0, Math.max(0.0, cfg.getDouble("events.bad-weather.strike-chance", 0.18)));
         weatherStrikesPerWave= Math.max(1, cfg.getInt("events.bad-weather.strikes-per-wave", 1));
+        weatherMaxStrikes    = Math.max(0, cfg.getInt("events.bad-weather.max-strikes", 12));
         meteorEnabled        = cfg.getBoolean("events.meteor-shower.enabled", true);
         meteorDuration       = Math.max(5, cfg.getInt("events.meteor-shower.duration-seconds", 180));
-        meteorWaveInterval   = Math.max(5, cfg.getInt("events.meteor-shower.wave-interval-ticks", 25));
-        meteorPerWave        = Math.max(1, cfg.getInt("events.meteor-shower.fireballs-per-wave", 2));
+        meteorWaveInterval   = Math.max(5, cfg.getInt("events.meteor-shower.wave-interval-ticks", 40));
+        meteorPerWave        = Math.max(1, cfg.getInt("events.meteor-shower.fireballs-per-wave", 1));
+        meteorMaxImpacts     = Math.max(1, cfg.getInt("events.meteor-shower.max-impacts", 12));
         meteorSpawnHeight    = Math.max(5, cfg.getDouble("events.meteor-shower.spawn-height", 28));
         meteorHitRadius      = Math.max(0.5, cfg.getDouble("events.meteor-shower.hit-radius", 2.5));
         creeperEnabled       = cfg.getBoolean("events.creeper-party.enabled", true);
@@ -664,6 +704,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         creeperHitRadius     = Math.max(0.5, cfg.getDouble("events.creeper-party.hit-radius", 2.0));
         creeperPlayerKnockback = Math.max(0.1, cfg.getDouble("events.creeper-party.player-knockback", 1.35));
         creeperRespawnDelay  = Math.max(10, cfg.getInt("events.creeper-party.respawn-delay-ticks", 60));
+        creeperMaxMutations  = Math.max(0, cfg.getInt("events.creeper-party.max-mutations", 12));
         roadsEnabled         = cfg.getBoolean("events.three-roads.enabled", true);
         roadsDuration        = Math.max(5, cfg.getInt("events.three-roads.duration-seconds", 180));
         roadsIncludeInAuto   = cfg.getBoolean("events.three-roads.include-in-auto", true);
@@ -725,6 +766,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         ufoMaxAbductions     = Math.max(0, cfg.getInt("events.ufo.max-abductions", 12));
         ufoSeparation        = Math.max(0.0, Math.min(ufoRoamRadius, cfg.getDouble("events.ufo.separation", 6.0)));
         ufoHuntInterval      = Math.max(1, cfg.getInt("events.ufo.hunt-interval-ticks", 10));
+        ufoWander            = Math.max(0.0, Math.min(0.5, cfg.getDouble("events.ufo.wander-radians", 0.10)));
         regionName           = cfg.getString("events.region.worldguard-region", "spawn");
         regionPadding        = Math.max(0, cfg.getDouble("events.region.padding", 8));
         manualMinX           = cfg.getDouble("events.region.min-x", 0);
@@ -819,6 +861,15 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     // ИВЕНТЫ: запуск / остановка / босс-бар
     // =========================================================
     private boolean startEvent(EventType type, int seconds, CommandSender feedback) {
+        return startEvent(type, seconds, feedback, null, false);
+    }
+
+    /**
+     * forcedWorld != null — ивент идёт именно в этом мире, минуя автоопределение.
+     * publicBroadcast — бар и объявления получают все игроки сервера, а не только мир ивента.
+     */
+    private boolean startEvent(EventType type, int seconds, CommandSender feedback,
+                               World forcedWorld, boolean publicBroadcast) {
         if (type == null) return false;
         if (type == EventType.BAD_WEATHER && !weatherEnabled) {
             if (feedback != null) feedback.sendMessage("§cИвент «Плохая Погода» отключён в конфиге.");
@@ -864,6 +915,14 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (feedback != null) feedback.sendMessage("§cИвент «НЛО» отключён в конфиге.");
             return false;
         }
+        // Ивенты, которые целиком живут в BrainrotSpawner, без него — пустой босс-бар.
+        // Проверяем ДО объявления игрокам, а не после.
+        String missing = missingSpawnerFeature(type);
+        if (missing != null) {
+            if (feedback != null) feedback.sendMessage("§cИвент «" + type.title + "» не запущен: " + missing + ".");
+            getLogger().warning("Ивент " + type.title + " не запущен: " + missing + ".");
+            return false;
+        }
         if (isActive(type)) {
             if (type == EventType.THREE_ROADS) {
                 // Карта уже перестроена. Разбирать её и строить заново — это две лишние
@@ -880,7 +939,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             }
         }
 
-        World world = resolveWorld(feedback);
+        World world = forcedWorld != null ? forcedWorld : resolveWorld(feedback);
         if (world == null) {
             if (feedback != null) feedback.sendMessage("§cНе найден мир для ивента (events.world в конфиге).");
             return false;
@@ -901,10 +960,11 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         bar.setProgress(1.0);
         bar.setVisible(true);
         EventSession session = new EventSession(type, world, bar, seconds);
+        session.publicBroadcast = publicBroadcast;
         sessions.put(type, session);
         syncBarPlayers(session);
 
-        for (Player p : world.getPlayers()) {
+        for (Player p : (publicBroadcast ? new ArrayList<>(Bukkit.getOnlinePlayers()) : new ArrayList<>(world.getPlayers()))) {
             p.sendMessage(type.format + "✦ Начался ивент: " + type.title + "!");
             try { p.sendTitle(type.format + type.title, "§7" + seconds + " секунд", 10, 50, 20); }
             catch (Throwable ignored) {}
@@ -938,6 +998,13 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             }
             case UFO -> startUfoEvent(session);
         }
+        // Старт мог сам себя отменить (НЛО без тарелок, машина без снимка, удача без ответа
+        // спавнера). Раньше startEvent всё равно возвращал true, и авто-ротация считала
+        // такой ивент сыгранным.
+        if (!isActive(type)) {
+            if (feedback != null) feedback.sendMessage("§cИвент «" + type.title + "» не смог запуститься — подробности в консоли.");
+            return false;
+        }
 
         getLogger().info("Ивент " + type.title + " запущен на " + seconds + "с в мире " + world.getName()
                 + " (всего активных: " + sessions.size() + ")");
@@ -946,6 +1013,43 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
 
     private boolean isActive(EventType type) {
         return sessions.containsKey(type);
+    }
+
+    // =========================================================
+    // API ДЛЯ BrainrotAdmin (вызывается рефлексией, только примитивы и строки)
+    // =========================================================
+
+    /** Список ивентов для GUI: "ключ;название;мир или пусто;секунд осталось". */
+    public List<String> adminEventList() {
+        List<String> out = new ArrayList<>();
+        for (EventType t : EventType.values()) {
+            EventSession s = sessions.get(t);
+            int left = s == null ? 0 : (int) Math.max(0, (s.endMillis - System.currentTimeMillis()) / 1000L);
+            out.add(t.key + ";" + t.title + ";" + (s == null ? "" : s.world.getName()) + ";" + left
+                    + ";" + (s != null && s.publicBroadcast));
+        }
+        return out;
+    }
+
+    /** Запуск ивента админкой. worldName == null/пусто — мир как раньше. */
+    public boolean adminStartEvent(String key, int seconds, String worldName, boolean publicBroadcast) {
+        EventType type = EventType.byKey(key);
+        if (type == null) return false;
+        World world = (worldName == null || worldName.isEmpty()) ? null : Bukkit.getWorld(worldName);
+        return startEvent(type, seconds, null, world, publicBroadcast);
+    }
+
+    public boolean adminStopEvent(String key) {
+        EventType type = EventType.byKey(key);
+        if (type == null || !isActive(type)) return false;
+        stopEvent(type, false);
+        return true;
+    }
+
+    public int adminStopAll() {
+        int n = sessions.size();
+        stopAllEvents(false);
+        return n;
     }
 
     /**
@@ -1006,7 +1110,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private void syncBarPlayers(EventSession s) {
         if (s == null || s.bar == null || s.world == null) return;
         for (Player p : Bukkit.getOnlinePlayers()) {
-            if (p.getWorld().equals(s.world)) s.bar.addPlayer(p);
+            if (s.publicBroadcast || p.getWorld().equals(s.world)) s.bar.addPlayer(p);
             else s.bar.removePlayer(p);
         }
     }
@@ -1060,7 +1164,10 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             barTask = null;
         }
         if (!silent && s.world != null) {
-            for (Player p : s.world.getPlayers()) {
+            // Старт публичного ивента видел весь сервер — значит, и конец тоже.
+            List<Player> audience = s.publicBroadcast
+                    ? new ArrayList<Player>(Bukkit.getOnlinePlayers()) : s.world.getPlayers();
+            for (Player p : audience) {
                 p.sendMessage("§7✦ Ивент «" + type.title + "» закончился.");
             }
             getLogger().info("Ивент " + type.title + " завершён.");
@@ -1232,6 +1339,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     /** Можно ли поставить этот ивент в авто-ротацию прямо сейчас. */
     private boolean canAutoStart(EventType type) {
         if (type == null || isActive(type)) return false;
+        if (missingSpawnerFeature(type) != null) return false;
         return switch (type) {
             case BAD_WEATHER -> weatherEnabled;
             case METEOR_SHOWER -> meteorEnabled;
@@ -1314,6 +1422,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     // =========================================================
     private void startBadWeather(EventSession session, int seconds) {
         final World world = session.world;
+        weatherStrikesDone = 0;
+        weatherStruck.clear();
         try {
             world.setStorm(true);
             world.setThundering(true);
@@ -1326,20 +1436,29 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             @Override public void run() {
                 if (!isActive(EventType.BAD_WEATHER)) { cancel(); return; }
                 try { world.setStorm(true); world.setThundering(true); } catch (Throwable ignored) {}
-                List<Entity> mobs = getSpawnerMobs();
+                // Лимит выбран — гроза остаётся атмосферой, мутаций больше не раздаём.
+                if (weatherMaxStrikes > 0 && weatherStrikesDone >= weatherMaxStrikes) return;
+                List<Entity> mobs = new ArrayList<>();
+                for (Entity m : getSpawnerMobs()) {
+                    if (m == null || !m.isValid() || !m.getWorld().equals(world)) continue;
+                    // Повторный удар в того же моба — пустая молния: мутация на нём уже есть.
+                    if (weatherStruck.contains(m.getUniqueId())) continue;
+                    mobs.add(m);
+                }
                 if (mobs.isEmpty()) return;
-                for (int i = 0; i < weatherStrikesPerWave; i++) {
+                for (int i = 0; i < weatherStrikesPerWave && !mobs.isEmpty(); i++) {
                     if (random.nextDouble() > weatherStrikeChance) continue;
-                    Entity target = mobs.get(random.nextInt(mobs.size()));
-                    if (target == null || !target.isValid()) continue;
-                    if (!target.getWorld().equals(world)) continue;
-                    strikeMob(target);
+                    if (weatherMaxStrikes > 0 && weatherStrikesDone >= weatherMaxStrikes) break;
+                    // remove: при strikes-per-wave > 1 одна волна не бьёт дважды в одного моба.
+                    Entity target = mobs.remove(random.nextInt(mobs.size()));
+                    weatherStruck.add(target.getUniqueId());
+                    if (strikeMob(target)) weatherStrikesDone++;
                 }
             }
         }.runTaskTimer(this, weatherStrikeInterval, weatherStrikeInterval));
     }
 
-    private void strikeMob(Entity mob) {
+    private boolean strikeMob(Entity mob) {
         Location loc = mob.getLocation();
         try { mob.getWorld().strikeLightningEffect(loc); } catch (Throwable ignored) {}
         try {
@@ -1352,7 +1471,9 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                     p.sendMessage("§e⚡ Молния ударила в моба — мутация §eЭлектрический§e!");
                 }
             }
+            return true;
         }
+        return false;
     }
 
     // =========================================================
@@ -1360,9 +1481,12 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     // =========================================================
     private void startMeteorShower(EventSession session) {
         final World world = session.world;
+        meteorImpactsDone = 0;
         session.tasks.add(new BukkitRunnable() {
             @Override public void run() {
                 if (!isActive(EventType.METEOR_SHOWER)) { cancel(); return; }
+                // Лимит выбран — новые метеориты не сыплем, только доводим уже летящие.
+                if (meteorImpactsDone >= meteorMaxImpacts) return;
                 double[] box = getRegionBounds(world);
                 if (box == null) return;
                 for (int i = 0; i < meteorPerWave; i++) spawnMeteor(world, box);
@@ -1431,7 +1555,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             meteor.getWorld().spawnParticle(Particle.LAVA, loc, 12, 0.4, 0.4, 0.4, 0.0);
             meteor.getWorld().playSound(loc, Sound.ENTITY_GENERIC_EXPLODE, 1.0f, 1.4f);
         } catch (Throwable ignored) {}
-        if (mob != null && applyStackableMutation(mob, "METEOR")) {
+        if (mob != null && meteorImpactsDone < meteorMaxImpacts && applyStackableMutation(mob, "METEOR")) {
+            meteorImpactsDone++;
             for (Player p : loc.getWorld().getPlayers()) {
                 if (p.getLocation().distanceSquared(loc) <= 60 * 60) {
                     p.sendMessage("§c☄ Метеорит попал в моба — мутация §cМетеоритный§c!");
@@ -1459,6 +1584,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private void startCreeperParty(EventSession session) {
         final World world = session.world;
         partyCreeperSpots.clear();
+        creeperMutationsDone = 0;
         int minX = Math.min(creeperMinX, creeperMaxX);
         int maxX = Math.max(creeperMinX, creeperMaxX);
         for (int x = minX; x <= maxX; x += creeperStep) {
@@ -1526,7 +1652,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 cr.setAI(true);
                 try {
                     cr.addPotionEffect(new PotionEffect(PotionEffectType.SLOWNESS,
-                            PotionEffect.INFINITE_DURATION, 250, false, false, false));
+                            PotionEffect.INFINITE_DURATION, 10, false, false, false));
                 } catch (Throwable ignored) {}
                 cr.setInvulnerable(true);
                 cr.setSilent(true);
@@ -1556,11 +1682,16 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         boolean goPlayer = random.nextDouble() < creeperPlayerChance;
         Entity target = null;
         Entity creeper = null;
+        // Лимит «Взрывных» выбран: к мобам больше не бегаем. Иначе каждый бросок
+        // уходил бы в «нет мобов -> к игроку», и игроков отбрасывало бы в разы чаще.
+        if (!goPlayer && creeperMaxMutations > 0 && creeperMutationsDone >= creeperMaxMutations) return;
 
         if (!goPlayer) {
             List<Entity> mobs = new ArrayList<>();
             for (Entity m : getSpawnerMobs()) {
-                if (m != null && m.isValid() && m.getWorld().equals(world)) mobs.add(m);
+                // Моб в луче НЛО / пузыре висит в воздухе: крипер до него не дотянется
+                // и просто простоит charge-timeout.
+                if (m != null && m.isValid() && m.getWorld().equals(world) && !isSpawnerAbducted(m)) mobs.add(m);
             }
             if (!mobs.isEmpty()) target = mobs.get(random.nextInt(mobs.size()));
         }
@@ -1704,7 +1835,10 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 p.playSound(p.getLocation(), Sound.ENTITY_GENERIC_EXPLODE, 1.0f, 1.3f);
                 p.sendMessage("§a☠ Крипер подкрался к тебе и рванул — держись!");
             } catch (Throwable ignored) {}
-        } else if (target != null && applyStackableMutation(target, "EXPLOSIVE")) {
+        } else if (target != null && target.isValid()
+                && (creeperMaxMutations <= 0 || creeperMutationsDone < creeperMaxMutations)
+                && applyStackableMutation(target, "EXPLOSIVE")) {
+            creeperMutationsDone++;
             for (Player p : loc.getWorld().getPlayers()) {
                 if (p.getLocation().distanceSquared(loc) <= 60 * 60) {
                     p.sendMessage("§a✦ Крипер взорвал моба — мутация §aВзрывной§a!");
@@ -2082,7 +2216,9 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private void startLucky2x(EventSession session) {
         if (!setSpawnerLuck(luckMultiplier)) {
             getLogger().warning("2x Удача: спавнер не отозвался, шансы не изменились "
-                    + "(нет BrainrotSpawner или он старой версии).");
+                    + "(нет BrainrotSpawner или он старой версии). Ивент снят.");
+            // Без множителя это 5 минут босс-бара «×2», который ничего не делает.
+            stopEvent(EventType.LUCKY_2X, true);
             return;
         }
         String mult = trimNumber(luckMultiplier);
@@ -2106,7 +2242,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return false;
         try {
-            Object res = spawner.getClass().getMethod("setLuckMultiplier", double.class)
+            Object res = spawnerMethod(spawner, "setLuckMultiplier", double.class)
                     .invoke(spawner, multiplier);
             return !(res instanceof Boolean b) || b;
         } catch (NoSuchMethodException ex) {
@@ -2122,7 +2258,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return;
         try {
-            spawner.getClass().getMethod("clearLuckMultiplier").invoke(spawner);
+            spawnerMethod(spawner, "clearLuckMultiplier").invoke(spawner);
         } catch (Throwable t) {
             getLogger().warning("2x Удача: не удалось снять множитель: " + t);
         }
@@ -2133,7 +2269,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return 1.0;
         try {
-            Object res = spawner.getClass().getMethod("getLuckMultiplier").invoke(spawner);
+            Object res = spawnerMethod(spawner, "getLuckMultiplier").invoke(spawner);
             if (res instanceof Number n) return n.doubleValue();
         } catch (Throwable ignored) {}
         return 1.0;
@@ -2179,8 +2315,15 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (gumPendingTeardown != null) { runPendingGumTeardown(); return; }
             if (!isActive(EventType.GUM_MACHINE)) { restoreGumRegion(world); return; }
             if (!setSpawnerGumMachine(world)) {
-                getLogger().warning("Бабл Гам Машина: спавнер не отозвался — пузырь работать не будет "
-                        + "(нет BrainrotSpawner или он старой версии).");
+                // Без лифта машина — декорация с босс-баром. Снимаем ивент и возвращаем регион.
+                getLogger().severe("Бабл Гам Машина: спавнер не включил лифт — ивент отменён, регион возвращается.");
+                for (Player p : world.getPlayers()) {
+                    if (p.hasPermission("brainrotevents.admin")) {
+                        p.sendMessage("§cБабл Гам Машина: спавнер не включил лифт, ивент отменён (см. консоль).");
+                    }
+                }
+                stopEvent(EventType.GUM_MACHINE, true);
+                return;
             }
             for (Player p : world.getPlayers()) {
                 p.sendMessage("§d§l✦ Бабл Гам Машина заработала! §7Мобы залипают в пузыре и выходят «Баблгамовыми».");
@@ -2383,7 +2526,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             // Сначала версия с кулдауном, потом старая на 8 аргументов —
             // чтобы плагин работал и со спавнером, собранным до кулдауна.
             try {
-                Object res = spawner.getClass().getMethod("setGumMachine", String.class, double.class, double.class,
+                Object res = spawnerMethod(spawner, "setGumMachine", String.class, double.class, double.class,
                                 double.class, double.class, double.class, int.class, int.class, double.class)
                         .invoke(spawner, world.getName(), trigger.getX(), trigger.getY(), trigger.getZ(),
                                 gumTopY, gumChance, holdMin, holdMax, gumCooldownSeconds);
@@ -2391,7 +2534,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             } catch (NoSuchMethodException ignored) {
                 getLogger().warning("Бабл Гам Машина: у спавнера нет кулдауна (старая сборка) — включаю без него.");
             }
-            Object res = spawner.getClass().getMethod("setGumMachine", String.class, double.class, double.class,
+            Object res = spawnerMethod(spawner, "setGumMachine", String.class, double.class, double.class,
                             double.class, double.class, double.class, int.class, int.class)
                     .invoke(spawner, world.getName(), trigger.getX(), trigger.getY(), trigger.getZ(),
                             gumTopY, gumChance, holdMin, holdMax);
@@ -2409,7 +2552,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return;
         try {
-            spawner.getClass().getMethod("clearGumMachine").invoke(spawner);
+            spawnerMethod(spawner, "clearGumMachine").invoke(spawner);
         } catch (Throwable t) {
             getLogger().warning("Бабл Гам Машина: не удалось выключить лифт: " + t);
         }
@@ -2420,7 +2563,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return false;
         try {
-            Object res = spawner.getClass().getMethod("isGumMachineActive").invoke(spawner);
+            Object res = spawnerMethod(spawner, "isGumMachineActive").invoke(spawner);
             return res instanceof Boolean b && b;
         } catch (Throwable ignored) {}
         return false;
@@ -2448,6 +2591,19 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Entity target;           // кого держим лучом
         int beamTicks;           // сколько тиков ещё идёт захват
         int beamTotal;
+        /** Своя скорость каждой тарелки: одинаковые выглядели строем. */
+        double speedMul = 1.0;
+        int huntIn;              // через сколько тиков пересчитать цель
+        double preyX, preyZ;     // последняя найденная цель, между пересчётами
+        boolean hasPrey;
+        /** Через сколько тиков один раз повторить idle (риг ME в момент attach ещё не готов). */
+        int idleKick = 10;
+        /** Сдвиг броска на захват: тарелки кидают кубик в разные тики. */
+        int tryOffset;
+        /** Текущий поворот модели — поворачиваем плавно, а не рывком. */
+        float yaw;
+        /** Какая анимация сейчас запущена — чтобы погасить её перед следующей. */
+        String anim = "";
 
         UfoUnit(Entity carrier, Location home) {
             this.carrier = carrier;
@@ -2460,11 +2616,20 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
 
     private final List<UfoUnit> ufos = new ArrayList<>();
     private BukkitTask ufoTask;
+    /** Сколько мобов уже забрали за текущий ивент — против лимита max-abductions. */
+    private int ufoAbductionsDone;
+    /** UUID моба -> до какого момента его не берёт ни одна тарелка (mob-cooldown-seconds). */
+    private final Map<UUID, Long> ufoMobCooldowns = new HashMap<>();
+    /** Максимальный поворот тарелки за тик, градусов. */
+    private static final double UFO_MAX_YAW_STEP = 9.0;
+    private boolean stopAnimWarned = false;
 
     private void startUfoEvent(EventSession session) {
         final World world = session.world;
         if (world == null) return;
         clearUfos();
+        ufoAbductionsDone = 0;
+        ufoMobCooldowns.clear();
 
         boolean modelOk = isSpawnerModelEngineAvailable();
         int spawned = 0;
@@ -2482,8 +2647,12 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (modelOk && !attachSpawnerModel(carrier, ufoBlueprint)) {
                 getLogger().warning("НЛО: модель '" + ufoBlueprint + "' не встала на тарелку.");
             }
-            playSpawnerModel(carrier, "idle", true);
-            ufos.add(new UfoUnit(carrier, home));
+            UfoUnit unit = new UfoUnit(carrier, home);
+            switchUfoAnim(unit, "idle", true);
+            unit.tryOffset = random.nextInt(ufoTryInterval);
+            unit.speedMul = 0.75 + random.nextDouble() * 0.5;
+            unit.huntIn = random.nextInt(ufoHuntInterval);
+            ufos.add(unit);
             spawned++;
         }
         if (spawned == 0) {
@@ -2543,11 +2712,18 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             if (u.beamTicks > 0) tickUfoBeam(u);
             else {
                 moveUfo(u);
-                // idle запускаем не только на спавне: в момент attach риг ME ещё не готов,
-                // и самый первый playAnimation уходит в пустоту — тарелка стоит без анимаций.
-                if (tick == 10 || tick % 200 == 0) playSpawnerModel(u.carrier, "idle", true);
+                // В момент attach риг ME ещё не готов, и первый playAnimation уходит в пустоту —
+                // поэтому idle повторяем ОДИН раз через 10 тиков. Раньше он перезапускался ещё и
+                // каждые 200 тиков: 200 не кратно длине idle (64 тика), и полётный цикл каждые
+                // 10 секунд дёргался с начала посреди покачивания.
+                if (u.idleKick > 0 && --u.idleKick == 0) {
+                    u.anim = "";
+                    switchUfoAnim(u, "idle", true);
+                }
             }
-            if (u.beamTicks <= 0 && tick % ufoTryInterval == 0) tryUfoAbduction(u);
+            // Сдвиг на тарелку: раньше все пять бросали кубик в один тик, и лимит лучей
+            // всегда доставался тем, кто раньше в списке.
+            if (u.beamTicks <= 0 && (tick + u.tryOffset) % ufoTryInterval == 0) tryUfoAbduction(u);
         }
     }
 
@@ -2559,23 +2735,65 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         if (u.dirX == 0 && u.dirZ == 0) pickUfoCourse(u, null);
         if (--u.turnIn <= 0) pickUfoCourse(u, null);
 
-        // Пока кулдаун прошёл — тарелка не гуляет случайно, а правит курс на ближайшего
-        // моба. Со случайным курсом она могла ни разу не оказаться над конвейером за весь
-        // ивент: именно поэтому луч не включался и мутация никому не выдавалась.
-        Location prey = (System.currentTimeMillis() >= u.readyAtMillis && countUfoBeams() < ufoMaxBeams)
-                ? nearestUfoPrey(u) : null;
-        if (prey != null) {
-            double ax = prey.getX() - u.x, az = prey.getZ() - u.z;
+        // Курс каждый тик слегка ведёт в сторону: вместо ломаной из прямых отрезков
+        // получается плавная дуга, тарелка «гуляет», а не марширует.
+        double drift = (random.nextDouble() - 0.5) * ufoWander;
+        double cw = Math.cos(drift), sw = Math.sin(drift);
+        double wx = u.dirX * cw - u.dirZ * sw;
+        double wz = u.dirX * sw + u.dirZ * cw;
+        u.dirX = wx;
+        u.dirZ = wz;
+
+        // Пока кулдаун прошёл — тарелка правит курс на ближайшего моба. Со случайным
+        // курсом она могла ни разу не оказаться над конвейером за весь ивент: именно
+        // поэтому луч не включался и мутация никому не выдавалась. Пересчёт цели —
+        // раз в hunt-interval: поиск идёт рефлексией по всем мобам спавнера.
+        boolean mayHunt = !ufoAbductionLimitReached()
+                && System.currentTimeMillis() >= u.readyAtMillis
+                && countUfoBeams() < ufoMaxBeams;
+        if (--u.huntIn <= 0) {
+            u.huntIn = ufoHuntInterval;
+            Location prey = mayHunt ? nearestUfoPrey(u) : null;
+            u.hasPrey = prey != null;
+            if (prey != null) { u.preyX = prey.getX(); u.preyZ = prey.getZ(); }
+        }
+        if (mayHunt && u.hasPrey) {
+            double ax = u.preyX - u.x, az = u.preyZ - u.z;
             double len = Math.hypot(ax, az);
+            // Не разворот, а подмешивание: тарелка сворачивает к мобу по дуге.
             if (len > 0.4) {
-                u.dirX = ax / len;
-                u.dirZ = az / len;
-                u.turnIn = Math.max(u.turnIn, 20);
+                u.dirX += (ax / len) * 0.35;
+                u.dirZ += (az / len) * 0.35;
             }
         }
 
-        double nx = u.x + u.dirX * ufoSpeed;
-        double nz = u.z + u.dirZ * ufoSpeed;
+        // Расталкивание. Без него тарелки, выцеливающие мобов на одном конвейере,
+        // слетались в одну кашу — ради этого и заведён separation в конфиге.
+        double px = 0.0, pz = 0.0;
+        for (UfoUnit other : ufos) {
+            if (other == u) continue;
+            double dx = u.x - other.x, dz = u.z - other.z;
+            double d2 = dx * dx + dz * dz;
+            if (d2 < 1e-6 || d2 > ufoSeparation * ufoSeparation) continue;
+            double d = Math.sqrt(d2);
+            double push = (ufoSeparation - d) / ufoSeparation;
+            px += dx / d * push;
+            pz += dz / d * push;
+        }
+        if (px != 0.0 || pz != 0.0) {
+            // Вес больше единицы: разойтись важнее, чем догнать моба.
+            u.dirX += px * 1.6;
+            u.dirZ += pz * 1.6;
+        }
+
+        double norm = Math.hypot(u.dirX, u.dirZ);
+        if (norm < 1e-6) { pickUfoCourse(u, null); return; }
+        u.dirX /= norm;
+        u.dirZ /= norm;
+
+        double step = ufoSpeed * u.speedMul;
+        double nx = u.x + u.dirX * step;
+        double nz = u.z + u.dirZ * step;
         boolean blocked = false;
         // Дальше своего радиуса — разворот. Так тарелка не улетит за спавн.
         double dx = nx - u.home.getX(), dz = nz - u.home.getZ();
@@ -2609,6 +2827,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             // в одну точку и разбредутся по всему спавну.
             double hx = l.getX() - u.home.getX(), hz = l.getZ() - u.home.getZ();
             if (hx * hx + hz * hz > ufoRoamRadius * ufoRoamRadius) continue;
+            if (ufoMobOnCooldown(mob)) continue;
             if (isSpawnerAbducted(mob) || !isSpawnerConveyorMob(mob)) continue;
             double d = Math.hypot(l.getX() - u.x, l.getZ() - u.z);
             if (d >= bestDist) continue;
@@ -2649,8 +2868,14 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     }
 
     private void applyUfoPosition(UfoUnit u, double yaw) {
+        // Поворот ограничен по скорости: при старте луча курс полёта сменяется направлением
+        // на моба, и без ограничения модель разворачивалась за один тик.
+        double delta = ((yaw - u.yaw) % 360.0 + 540.0) % 360.0 - 180.0;
+        if (delta > UFO_MAX_YAW_STEP) delta = UFO_MAX_YAW_STEP;
+        if (delta < -UFO_MAX_YAW_STEP) delta = -UFO_MAX_YAW_STEP;
+        u.yaw = (float) (((u.yaw + delta) % 360.0 + 360.0) % 360.0);
         try {
-            Location loc = new Location(u.carrier.getWorld(), u.x, u.y, u.z, (float) yaw, 0f);
+            Location loc = new Location(u.carrier.getWorld(), u.x, u.y, u.z, u.yaw, 0f);
             u.carrier.teleport(loc);
         } catch (Throwable ignored) {}
     }
@@ -2659,6 +2884,9 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private void tryUfoAbduction(UfoUnit u) {
         if (System.currentTimeMillis() < u.readyAtMillis) return;
         if (countUfoBeams() >= ufoMaxBeams) return;
+        // Лимит на ивент был в конфиге, но нигде не проверялся: за 5 минут «Инопланетным»
+        // становилась половина конвейера.
+        if (ufoAbductionLimitReached()) return;
         if (random.nextDouble() * 100.0 >= ufoChance) return;
         pickUfoTarget(u, true);
     }
@@ -2673,7 +2901,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private String pickUfoTarget(UfoUnit u, boolean quiet) {
         Entity best = null;
         double bestDist = Double.MAX_VALUE;
-        int seen = 0, tooHigh = 0, tooFar = 0, busy = 0, offBelt = 0;
+        int seen = 0, tooHigh = 0, tooFar = 0, busy = 0, offBelt = 0, cooled = 0;
         for (Entity mob : getSpawnerMobs()) {
             if (mob == null || !mob.isValid() || mob.isDead()) continue;
             if (!mob.getWorld().equals(u.carrier.getWorld())) continue;
@@ -2686,6 +2914,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             double d = Math.hypot(l.getX() - u.x, l.getZ() - u.z);
             if (d > ufoBeamRange) { tooFar++; continue; }
             if (d >= bestDist) continue;
+            // Ручной /ufobeam кулдаун моба игнорирует — это проверка, а не игра.
+            if (quiet && ufoMobOnCooldown(mob)) { cooled++; continue; }
             if (isSpawnerAbducted(mob)) { busy++; continue; }
             // Не с конвейера — спавнер всё равно откажет, лучше поискать другого.
             if (!isSpawnerConveyorMob(mob)) { offBelt++; continue; }
@@ -2695,7 +2925,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         if (best == null) {
             return "мобов спавнера рядом: " + seen + " §7(выше тарелки: " + tooHigh
                     + ", далеко: " + tooFar + ", уже в луче: " + busy
-                    + ", не на конвейере: " + offBelt + ")";
+                    + ", не на конвейере: " + offBelt + ", на кулдауне: " + cooled + ")";
         }
 
         int hold = (int) Math.round((ufoHoldMinSeconds
@@ -2708,12 +2938,18 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         }
 
         u.target = best;
+        ufoAbductionsDone++;
         // 50 тиков подъём + висение + 40 тиков возврат — так считает лифт в спавнере.
         u.beamTotal = 50 + hold + 40;
         u.beamTicks = u.beamTotal;
         u.readyAtMillis = System.currentTimeMillis() + (long) (ufoCooldownSeconds * 1000.0)
                 + u.beamTotal * 50L;
-        playSpawnerModel(u.carrier, "beam_on", false);
+        u.hasPrey = false;
+        // mob-cooldown-seconds был в конфиге, но нигде не проверялся: одного и того же моба
+        // могли забирать снова сразу после возвращения.
+        ufoMobCooldowns.put(best.getUniqueId(), System.currentTimeMillis() + u.beamTotal * 50L
+                + (long) (ufoMobCooldownSeconds * 1000.0));
+        switchUfoAnim(u, "beam_on", false);
         if (!quiet) getLogger().info("НЛО: луч включён вручную, держим " + (hold / 20.0) + "с.");
         return null;
     }
@@ -2737,16 +2973,56 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 u.x = followX;
                 u.z = followZ;
             }
-            applyUfoPosition(u, Math.toDegrees(Math.atan2(-(l.getX() - u.x), l.getZ() - u.z)));
+            double ax = l.getX() - u.x, az = l.getZ() - u.z;
+            // Тарелка почти точно над мобом: направление вырождается в шум, и модель
+            // крутило на месте. В этом случае держим текущий поворот.
+            double yaw = (ax * ax + az * az) < 0.25 ? u.yaw : Math.toDegrees(Math.atan2(-ax, az));
+            applyUfoPosition(u, yaw);
+        } else if (u.beamTicks > 12) {
+            // Моба не стало (купили, убрали, деспавн) — не держим луч над пустотой,
+            // сразу уходим в beam_off.
+            u.target = null;
+            u.beamTicks = 12;
         }
         int passed = u.beamTotal - u.beamTicks;
-        if (passed == 50) playSpawnerModel(u.carrier, "abduct", false);
-        if (u.beamTicks == 40) playSpawnerModel(u.carrier, "beam_off", false);
+        // Длины анимаций в блюпринте: beam_on 18 тиков, abduct 32 (loop), beam_off 12.
+        // Переключение по состоянию, а не по точному номеру тика: так фазу не пропустить,
+        // если луч оборвали раньше.
+        if (u.beamTicks > 0 && u.beamTicks <= 12) {
+            if (!"beam_off".equals(u.anim)) switchUfoAnim(u, "beam_off", false);
+        } else if (passed >= 18 && "beam_on".equals(u.anim)) {
+            switchUfoAnim(u, "abduct", true);
+        }
         if (u.beamTicks <= 0) {
             u.target = null;
             u.beamTotal = 0;
-            playSpawnerModel(u.carrier, "idle", true);
+            switchUfoAnim(u, "idle", true);
         }
+    }
+
+    /** 0 = без лимита, как и сказано в конфиге (раньше 0 выключал захваты совсем). */
+    private boolean ufoAbductionLimitReached() {
+        return ufoMaxAbductions > 0 && ufoAbductionsDone >= ufoMaxAbductions;
+    }
+
+    private boolean ufoMobOnCooldown(Entity mob) {
+        Long until = ufoMobCooldowns.get(mob.getUniqueId());
+        if (until == null) return false;
+        if (until > System.currentTimeMillis()) return true;
+        ufoMobCooldowns.remove(mob.getUniqueId());
+        return false;
+    }
+
+    /**
+     * Переключение анимации тарелки: сначала гасим прошлую, потом включаем новую.
+     * Раньше beam_on/abduct/beam_off включались поверх idle. В idle кость beam сжата
+     * до 0.001 — если ModelEngine смешивает обе анимации, луч так и остаётся спрятанным.
+     */
+    private void switchUfoAnim(UfoUnit u, String anim, boolean loop) {
+        if (anim.equals(u.anim)) return;
+        if (!u.anim.isEmpty()) stopSpawnerModel(u.carrier, u.anim);
+        u.anim = anim;
+        playSpawnerModel(u.carrier, anim, loop);
     }
 
     private int countUfoBeams() {
@@ -2771,20 +3047,48 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         ufos.clear();
     }
 
-    /** Тарелки после падения сервера: ищем по тегу во всех мирах. */
-    private void cleanupStrayUfos() {
+    /** Сущности ивентов после падения сервера: ищем по тегам во всех мирах. */
+    private void cleanupStrayEventEntities() {
         int removed = 0;
         for (World w : Bukkit.getWorlds()) {
             for (Entity e : w.getEntities()) {
                 try {
-                    if (!e.getScoreboardTags().contains(UFO_TAG)) continue;
-                    detachSpawnerModel(e);
+                    if (!isEventEntityTag(e)) continue;
+                    if (e.getScoreboardTags().contains(UFO_TAG)) detachSpawnerModel(e);
                     e.remove();
                     removed++;
                 } catch (Throwable ignored) {}
             }
         }
-        if (removed > 0) getLogger().warning("НЛО: убрал " + removed + " тарелок с прошлого запуска.");
+        if (removed > 0) getLogger().warning("Убрал " + removed + " сущностей ивентов с прошлого запуска (НЛО/криперы/метеориты).");
+    }
+
+    private boolean isEventEntityTag(Entity e) {
+        Set<String> tags = e.getScoreboardTags();
+        return tags.contains(UFO_TAG) || tags.contains(PARTY_CREEPER_TAG) || tags.contains(METEOR_TAG);
+    }
+
+    /**
+     * Чанк с криперами пати выгрузился и загрузился снова: в мире появляется копия крипера,
+     * а в списке ивента остаётся мёртвая ссылка — добор ставит ещё одного, и шеренга
+     * удваивается. Сохранённые копии всегда лишние: живых ивент добирает сам.
+     */
+    @EventHandler
+    public void onEntitiesLoad(EntitiesLoadEvent event) {
+        List<Entity> stray = new ArrayList<>();
+        for (Entity e : event.getEntities()) {
+            try { if (isEventEntityTag(e)) stray.add(e); } catch (Throwable ignored) {}
+        }
+        if (stray.isEmpty()) return;
+        Bukkit.getScheduler().runTask(this, () -> {
+            for (Entity e : stray) {
+                try {
+                    if (!e.isValid()) continue;
+                    if (e.getScoreboardTags().contains(UFO_TAG)) detachSpawnerModel(e);
+                    e.remove();
+                } catch (Throwable ignored) {}
+            }
+        });
     }
 
     // ----- мост к спавнеру для НЛО -----
@@ -2793,8 +3097,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return false;
         try {
-            Object res = spawner.getClass()
-                    .getMethod("startAbduction", Entity.class, double.class, int.class, String.class)
+            Object res = spawnerMethod(spawner, "startAbduction", Entity.class, double.class, int.class, String.class)
                     .invoke(spawner, mob, rise, holdTicks, mutation);
             return !(res instanceof Boolean b) || b;
         } catch (NoSuchMethodException ex) {
@@ -2810,7 +3113,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return false;
         try {
-            Object res = spawner.getClass().getMethod("isAbducted", Entity.class).invoke(spawner, mob);
+            Object res = spawnerMethod(spawner, "isAbducted", Entity.class).invoke(spawner, mob);
             return res instanceof Boolean b && b;
         } catch (Throwable ignored) {}
         return false;
@@ -2825,7 +3128,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return false;
         try {
-            Object res = spawner.getClass().getMethod("isConveyorMob", Entity.class).invoke(spawner, mob);
+            Object res = spawnerMethod(spawner, "isConveyorMob", Entity.class).invoke(spawner, mob);
             return !(res instanceof Boolean b) || b;
         } catch (NoSuchMethodException ex) {
             return true;
@@ -2836,7 +3139,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     private void clearSpawnerAbductions() {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return;
-        try { spawner.getClass().getMethod("clearAbductions").invoke(spawner); }
+        try { spawnerMethod(spawner, "clearAbductions").invoke(spawner); }
         catch (Throwable ignored) {}
     }
 
@@ -2844,7 +3147,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return false;
         try {
-            Object res = spawner.getClass().getMethod("isModelEngineAvailable").invoke(spawner);
+            Object res = spawnerMethod(spawner, "isModelEngineAvailable").invoke(spawner);
             return res instanceof Boolean b && b;
         } catch (Throwable ignored) {}
         return false;
@@ -2854,7 +3157,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return false;
         try {
-            Object res = spawner.getClass().getMethod("attachEventModel", Entity.class, String.class)
+            Object res = spawnerMethod(spawner, "attachEventModel", Entity.class, String.class)
                     .invoke(spawner, entity, blueprint);
             return res instanceof Boolean b && b;
         } catch (Throwable t) {
@@ -2867,17 +3170,36 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return false;
         try {
-            Object res = spawner.getClass().getMethod("playEventModel", Entity.class, String.class, boolean.class)
+            Object res = spawnerMethod(spawner, "playEventModel", Entity.class, String.class, boolean.class)
                     .invoke(spawner, entity, animation, loop);
             return !(res instanceof Boolean b) || b;
         } catch (Throwable ignored) {}
         return false;
     }
 
+    /**
+     * Гасит анимацию на модели через BrainrotSpawner.stopEventModel(Entity, String).
+     * Если в установленной сборке спавнера метода нет — один раз предупреждаем в консоли:
+     * тогда смена анимаций целиком зависит от того, гасит ли playEventModel прошлую.
+     */
+    private void stopSpawnerModel(Entity entity, String animation) {
+        Object spawner = getSpawnerPlugin();
+        if (spawner == null || entity == null || animation == null || animation.isEmpty()) return;
+        try {
+            spawnerMethod(spawner, "stopEventModel", Entity.class, String.class).invoke(spawner, entity, animation);
+        } catch (NoSuchMethodException ex) {
+            if (!stopAnimWarned) {
+                stopAnimWarned = true;
+                getLogger().warning("НЛО: в BrainrotSpawner нет stopEventModel(Entity, String) — прошлая анимация "
+                        + "тарелки не гасится. Если idle и луч накладываются (луч не виден), добавь метод в спавнер.");
+            }
+        } catch (Throwable ignored) {}
+    }
+
     private void detachSpawnerModel(Entity entity) {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return;
-        try { spawner.getClass().getMethod("detachEventModel", Entity.class).invoke(spawner, entity); }
+        try { spawnerMethod(spawner, "detachEventModel", Entity.class).invoke(spawner, entity); }
         catch (Throwable ignored) {}
     }
 
@@ -2897,7 +3219,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null || entity == null) return List.of("§cспавнер не подключён");
         try {
-            Object res = spawner.getClass().getMethod("describeEventModel", Entity.class)
+            Object res = spawnerMethod(spawner, "describeEventModel", Entity.class)
                     .invoke(spawner, entity);
             if (res instanceof List) return (List<String>) res;
         } catch (NoSuchMethodException ex) {
@@ -3024,6 +3346,41 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
     // =========================================================
     // МОСТ К BrainrotSpawner (через рефлексию — плагины не связаны зависимостью)
     // =========================================================
+    /**
+     * Кэш методов спавнера. getMethod при каждом вызове — это поиск по всем публичным
+     * методам класса, а getSpawnerMobs/isAbducted/isConveyorMob зовутся десятки раз в
+     * секунду (метеориты — каждый тик, пять тарелок — на каждой охоте).
+     * Ключ включает загрузчик класса: после перезагрузки спавнера кэш не протухнет.
+     */
+    private final Map<String, Method> spawnerMethodCache = new HashMap<>();
+
+    private Method spawnerMethod(Object spawner, String name, Class<?>... types) throws NoSuchMethodException {
+        Class<?> c = spawner.getClass();
+        String key = c.getName() + "@" + System.identityHashCode(c) + "#" + name + Arrays.toString(types);
+        Method m = spawnerMethodCache.get(key);
+        if (m == null) {
+            m = c.getMethod(name, types);
+            spawnerMethodCache.put(key, m);
+        }
+        return m;
+    }
+
+    /** null — спавнер умеет всё, что нужно ивенту; иначе — чего не хватает. */
+    private String missingSpawnerFeature(EventType type) {
+        boolean needsSpawner = type == EventType.THREE_ROADS || type == EventType.LUCKY_2X
+                || type == EventType.GUM_MACHINE || type == EventType.UFO;
+        if (!needsSpawner) return null;
+        if (getSpawnerPlugin() == null) return "не подключён BrainrotSpawner";
+        return switch (type) {
+            case THREE_ROADS -> spawnerHasMethod("addEventConveyor", 6) ? null : "в BrainrotSpawner нет addEventConveyor";
+            case LUCKY_2X -> spawnerHasMethod("setLuckMultiplier", 1) ? null : "в BrainrotSpawner нет setLuckMultiplier";
+            case GUM_MACHINE -> (spawnerHasMethod("setGumMachine", 9) || spawnerHasMethod("setGumMachine", 8))
+                    ? null : "в BrainrotSpawner нет setGumMachine";
+            case UFO -> spawnerHasMethod("startAbduction", 4) ? null : "в BrainrotSpawner нет startAbduction";
+            default -> null;
+        };
+    }
+
     private Object getSpawnerPlugin() {
         try {
             org.bukkit.plugin.Plugin p = Bukkit.getPluginManager().getPlugin("BrainrotSpawner");
@@ -3038,7 +3395,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return Collections.emptyList();
         try {
-            Object res = spawner.getClass().getMethod("getSpawnerMobs").invoke(spawner);
+            Object res = spawnerMethod(spawner, "getSpawnerMobs").invoke(spawner);
             if (res instanceof List) return (List<Entity>) res;
         } catch (Throwable ignored) {}
         return Collections.emptyList();
@@ -3049,7 +3406,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return Collections.emptyList();
         try {
-            Object res = spawner.getClass().getMethod("getConveyorPoints").invoke(spawner);
+            Object res = spawnerMethod(spawner, "getConveyorPoints").invoke(spawner);
             if (res instanceof List) return (List<Location>) res;
         } catch (Throwable ignored) {}
         return Collections.emptyList();
@@ -3059,8 +3416,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null || mob == null) return false;
         try {
-            Object res = spawner.getClass()
-                    .getMethod("applyStackableMutation", Entity.class, String.class)
+            Object res = spawnerMethod(spawner, "applyStackableMutation", Entity.class, String.class)
                     .invoke(spawner, mob, mutation);
             return res instanceof Boolean && (Boolean) res;
         } catch (Throwable t) {
@@ -3074,7 +3430,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return Collections.emptyList();
         try {
-            Object res = spawner.getClass().getMethod("getPermanentSpawnerIds").invoke(spawner);
+            Object res = spawnerMethod(spawner, "getPermanentSpawnerIds").invoke(spawner);
             if (res instanceof List) return (List<String>) res;
         } catch (Throwable ignored) {}
         return Collections.emptyList();
@@ -3084,7 +3440,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return 0.0;
         try {
-            Object res = spawner.getClass().getMethod("getSpawnerSpeed", String.class).invoke(spawner, id);
+            Object res = spawnerMethod(spawner, "getSpawnerSpeed", String.class).invoke(spawner, id);
             if (res instanceof Number n) return n.doubleValue();
         } catch (Throwable ignored) {}
         return 0.0;
@@ -3094,7 +3450,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return 0L;
         try {
-            Object res = spawner.getClass().getMethod("getSpawnerCooldownTicks", String.class).invoke(spawner, id);
+            Object res = spawnerMethod(spawner, "getSpawnerCooldownTicks", String.class).invoke(spawner, id);
             if (res instanceof Number n) return n.longValue();
         } catch (Throwable ignored) {}
         return 0L;
@@ -3109,7 +3465,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             return false;
         }
         try {
-            Object res = spawner.getClass().getMethod("addEventConveyor",
+            Object res = spawnerMethod(spawner, "addEventConveyor",
                             String.class, Location.class, Location.class, double.class, String.class, long.class)
                     .invoke(spawner, id, spawn, despawn, speed, direction, cooldownTicks);
             return res instanceof Boolean && (Boolean) res;
@@ -3127,7 +3483,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
         Object spawner = getSpawnerPlugin();
         if (spawner == null) return -1;
         try {
-            Object res = spawner.getClass().getMethod("removeEventConveyor", String.class).invoke(spawner, id);
+            Object res = spawnerMethod(spawner, "removeEventConveyor", String.class).invoke(spawner, id);
             if (res instanceof Number n) return n.intValue();
         } catch (Throwable t) {
             getLogger().warning("3 Тропы: дорожку " + id + " снять не вышло: " + t);
@@ -3304,8 +3660,8 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                 return true;
             }
             if (args.length == 0) {
-                sender.sendMessage("§6/" + label + " start <badweather|meteor|creeper|3road|2x|gum> [секунды] §7— можно запускать несколько сразу");
-                sender.sendMessage("§6/" + label + " stop [badweather|meteor|creeper|3road|2x|gum] §7— остановить один или все");
+                sender.sendMessage("§6/" + label + " start <badweather|meteor|creeper|3road|2x|gum|ufo> [секунды] §7— можно запускать несколько сразу");
+                sender.sendMessage("§6/" + label + " stop [badweather|meteor|creeper|3road|2x|gum|ufo] §7— остановить один или все");
                 sender.sendMessage("§6/" + label + " status §7— что сейчас идёт");
                 sender.sendMessage("§6/" + label + " ufodebug §7— почему НЛО не забирает мобов");
                 sender.sendMessage("§6/" + label + " ufobeam §7— включить луч прямо сейчас (проверка мутации)");
@@ -3315,7 +3671,7 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
             }
             switch (args[0].toLowerCase(Locale.ROOT)) {
                 case "start" -> {
-                    if (args.length < 2) { sender.sendMessage("§cУкажи ивент: badweather, meteor, creeper, 3road, 2x или gum."); return true; }
+                    if (args.length < 2) { sender.sendMessage("§cУкажи ивент: badweather, meteor, creeper, 3road, 2x, gum или ufo."); return true; }
                     EventType type = EventType.byKey(args[1]);
                     if (type == null) { sender.sendMessage("§cНеизвестный ивент: " + args[1]); return true; }
                     int seconds = 0;
@@ -3472,7 +3828,12 @@ public class BrainrotEvents extends JavaPlugin implements Listener {
                     // Ручная проверка имён: ME мог разобрать блюпринт с префиксом animation.*,
                     // и тогда плоское имя из кода не играется. playSpawnerModel сам пробует оба.
                     int ok = 0;
-                    for (UfoUnit u : new ArrayList<>(ufos)) if (playSpawnerModel(u.carrier, anim, loop)) ok++;
+                    for (UfoUnit u : new ArrayList<>(ufos)) {
+                        // Гасим текущую анимацию — иначе проверка показывает смесь двух.
+                        if (!u.anim.isEmpty() && !u.anim.equals(anim)) stopSpawnerModel(u.carrier, u.anim);
+                        u.anim = anim;
+                        if (playSpawnerModel(u.carrier, anim, loop)) ok++;
+                    }
                     sender.sendMessage("§7Анимация §f" + anim + " §7(loop " + loop + "): сыграла на §f"
                             + ok + "§7/§f" + ufos.size() + " §7тарелках."
                             + (ok == 0 ? " §cСмотри список имён в /" + label + " ufodebug." : ""));
